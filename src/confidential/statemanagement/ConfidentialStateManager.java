@@ -37,7 +37,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
     private long timeout = INIT_TIMEOUT;
     private final ReentrantLock lockTimer;
     private final AtomicInteger sequenceNumber;
-    private final Map<Integer, SMMessage> onGoingRecoveryRequests;
     private final HashMap<Integer, Integer> sequenceNumbers;
     private final Timer refreshTimer;
     private TimerTask refreshTriggerTask;
@@ -49,7 +48,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
     public ConfidentialStateManager() {
         lockTimer = new ReentrantLock();
         sequenceNumber = new AtomicInteger();
-        onGoingRecoveryRequests = new HashMap<>();
         sequenceNumbers = new HashMap<>();
         refreshTimer = new Timer("Refresh Timer");
         usedReplicas = new HashSet<>();
@@ -91,7 +89,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             }
         }
     }
-
 
     @Override
     protected void requestState() {
@@ -141,16 +138,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             }
         };
 
-        new StateRecoveryHandler(
-                this,
-                SVController.getCurrentViewF(),
-                SVController,
-                distributedPolynomial.getField(),
-                confidentialityScheme,
-                stateSenderReplica,
-                SERVER_STATE_LISTENING_PORT
-        ).start();
-
         stateTimer = new Timer("State Timer");
         timeout *= 2;
         stateTimer.schedule(stateTask, timeout);
@@ -172,25 +159,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
     public void SMRequestDeliver(SMMessage msg, boolean isBFT) {
         if (msg instanceof DefaultSMMessage) {
             logger.debug("Received recovery request from {}", msg.getSender());
-            if (SVController.getStaticConf().isStateTransferEnabled() && dt.getRecoverer() != null) {
-                int id = sequenceNumber.getAndIncrement();
-                onGoingRecoveryRequests.put(id, msg);
-                PolynomialContext context = new PolynomialContext(
-                        SVController.getCurrentViewF(),
-                        confidentialityScheme.getShareholder(msg.getSender()),
-                        BigInteger.ZERO,
-                        SVController.getCurrentViewAcceptors()
-                );
-                PolynomialCreationContext creationContext = new PolynomialCreationContext(
-                        id,
-                        msg.getLeader(),
-                        PolynomialCreationReason.RECOVERY,
-                        context
-                );
-                logger.debug("Starting creation of new polynomial with id {} to recover member {}", id, msg.getSender());
-                distributedPolynomial.createNewPolynomial(creationContext);
-
-            }
+            throw new UnsupportedOperationException("Use resharing");
         } else
             logger.warn("Received unknown SM message type from {}", msg.getSender());
     }
@@ -367,11 +336,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             sequenceNumber.set(context.getId() + 1);
         if (SVController.getStaticConf().isStateTransferEnabled() && dt.getRecoverer() != null
                 && context.getReason() == PolynomialCreationReason.RECOVERY) {
-            VerifiableShare point = points[0];//TODO change to recover multiple servers
-            if (onGoingRecoveryRequests.containsKey(context.getId()))
-                sendRecoveryState((DefaultSMMessage)onGoingRecoveryRequests.remove(context.getId()), point);
-            else
-                logger.debug("There is no recovery request for id {}", context.getId());
+            throw new UnsupportedOperationException("Use resharing");
         } else if (PolynomialCreationReason.RESHARING == context.getReason()) {
             refreshTriggerTask.cancel();
 
@@ -482,46 +447,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
         };
 
         refreshTimer.schedule(refreshTriggerTask, RENEWAL_PERIOD);
-    }
-
-    private void sendRecoveryState(DefaultSMMessage recoveryMessage, VerifiableShare recoveryPoint) {
-        logger.debug("Creating recovery state up to CID {} for {}", recoveryMessage.getCID(),
-                recoveryMessage.getSender());
-        DefaultApplicationState appState = (DefaultApplicationState)dt.getRecoverer().getState(recoveryMessage.getCID(), true);
-        if (appState == null || appState.getMessageBatches() == null) {
-            logger.debug("Ignoring this state transfer request because app state is null");
-            return;
-        }
-
-        logger.debug("Sending sequence number {} with the state", sequenceNumber.get());
-        RecoveryStateServerSMMessage response = new RecoveryStateServerSMMessage(
-                SVController.getStaticConf().getProcessId(),
-                appState.getLastCID(),
-                TOMUtil.SM_REPLY,
-                SVController.getCurrentView(),
-                tomLayer.getSynchronizer().getLCManager().getLastReg(),
-                recoveryMessage.getLeader(),
-                sequenceNumber.get()
-        );
-
-        try {
-            logger.debug("Starting recovery state sender thread");
-            new RecoveryStateSender(
-                    recoveryMessage.getServerPort(),
-                    SVController.getCurrentView().getAddress(recoveryMessage.getSender()).getAddress().getHostAddress(),
-                    appState,
-                    recoveryPoint,
-                    distributedPolynomial.getField(),
-                    SVController,
-                    recoveryMessage.getStateSenderReplica() == SVController.getStaticConf().getProcessId()
-            ).start();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        logger.info("Sending recovery state sender server info to {}", recoveryMessage.getSender());
-        tomLayer.getCommunication().send(new int[]{recoveryMessage.getSender()}, response);
-        logger.info("Recovery state sender server info sent");
     }
 
     private int getCorrectValue(HashMap<Integer, Integer> senders) {

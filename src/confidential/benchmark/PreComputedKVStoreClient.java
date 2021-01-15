@@ -1,7 +1,7 @@
 package confidential.benchmark;
 
 import confidential.client.Response;
-import confidential.demo.map.client.Operation;
+import confidential.demo.map.Operation;
 import vss.facade.SecretSharingException;
 import vss.secretsharing.PrivatePublishedShares;
 

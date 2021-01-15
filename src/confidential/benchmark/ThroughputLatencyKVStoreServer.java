@@ -3,7 +3,7 @@ package confidential.benchmark;
 import bftsmart.tom.MessageContext;
 import confidential.ConfidentialData;
 import confidential.ConfidentialMessage;
-import confidential.demo.map.client.Operation;
+import confidential.demo.map.Operation;
 import confidential.facade.server.ConfidentialServerFacade;
 import confidential.facade.server.ConfidentialSingleExecutable;
 import confidential.statemanagement.ConfidentialSnapshot;

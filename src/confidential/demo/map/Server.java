@@ -1,4 +1,4 @@
-package confidential.demo.map.server;
+package confidential.demo.map;
 
 public class Server {
 	public static void main(String[] args) throws NumberFormatException {

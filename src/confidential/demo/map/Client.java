@@ -1,4 +1,4 @@
-package confidential.demo.map.client;
+package confidential.demo.map;
 
 import java.util.List;
 
