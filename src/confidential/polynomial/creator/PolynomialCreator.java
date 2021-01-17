@@ -132,6 +132,8 @@ public abstract class PolynomialCreator {
     }
 
     private void generateAndSendProposal() {
+        logger.info("Creating new {} polynomial(s) with id {}", creationContext.getnPolynomials(),
+                creationContext.getId());
         startTime = System.nanoTime();
         myProposal = computeProposalMessage();
 

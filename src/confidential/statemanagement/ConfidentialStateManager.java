@@ -342,59 +342,57 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
 
             isRefreshing = true;
             int[] oldMembers = context.getContexts()[0].getMembers();
-            int[] newMembers = context.getContexts()[1].getMembers();
-            logger.info("Old members: {}", Arrays.toString(oldMembers));
-            logger.info("New members: {}", Arrays.toString(newMembers));
             int processId = SVController.getStaticConf().getProcessId();
-            if (Utils.isIn(processId, newMembers)) {
-                if (Configuration.getInstance().getNPolynomials() == 1) {
-                    SinglePolynomialBlindedStateHandler blindedStateHandler;
-                    if (Configuration.getInstance().getVssScheme().equals("1"))
-                        blindedStateHandler = new SinglePolynomialLinearBlindedStateHandler(
-                                SVController,
-                                context,
-                                confidentialityScheme,
-                                context.getLeader(),
-                                SERVER_STATE_LISTENING_PORT,
-                                this
-                        );
-                    else
-                        blindedStateHandler = new SinglePolynomialConstantBlindedStateHandler(
-                                SVController,
-                                context,
-                                confidentialityScheme,
-                                context.getLeader(),
-                                SERVER_STATE_LISTENING_PORT,
-                                this
-                        );
-                    blindedStateHandler.start();
-                } else {
-                    BlindedStateHandler blindedStateHandler;
-                    if (Configuration.getInstance().getVssScheme().equals("1"))
-                        blindedStateHandler = new LinearBlindedStateHandler(
-                                SVController,
-                                context,
-                                confidentialityScheme,
-                                context.getLeader(),
-                                SERVER_STATE_LISTENING_PORT,
-                                this
-                        );
-                    else
-                        blindedStateHandler = new ConstantBlindedStateHandler(
-                                SVController,
-                                context,
-                                confidentialityScheme,
-                                context.getLeader(),
-                                SERVER_STATE_LISTENING_PORT,
-                                this
-                        );
-                    blindedStateHandler.start();
-                }
-            }
 
             if (Utils.isIn(processId, oldMembers)) {
                 sendingBlindedState(context, points, consensusId);
             }
+        }
+    }
+
+    private void startBlindedStateHandler(PolynomialCreationContext context) {
+        if (Configuration.getInstance().getNPolynomials() == 1) {
+            SinglePolynomialBlindedStateHandler blindedStateHandler;
+            if (Configuration.getInstance().getVssScheme().equals("1"))
+                blindedStateHandler = new SinglePolynomialLinearBlindedStateHandler(
+                        SVController,
+                        context,
+                        confidentialityScheme,
+                        context.getLeader(),
+                        SERVER_STATE_LISTENING_PORT,
+                        this
+                );
+            else
+                blindedStateHandler = new SinglePolynomialConstantBlindedStateHandler(
+                        SVController,
+                        context,
+                        confidentialityScheme,
+                        context.getLeader(),
+                        SERVER_STATE_LISTENING_PORT,
+                        this
+                );
+            blindedStateHandler.start();
+        } else {
+            BlindedStateHandler blindedStateHandler;
+            if (Configuration.getInstance().getVssScheme().equals("1"))
+                blindedStateHandler = new LinearBlindedStateHandler(
+                        SVController,
+                        context,
+                        confidentialityScheme,
+                        context.getLeader(),
+                        SERVER_STATE_LISTENING_PORT,
+                        this
+                );
+            else
+                blindedStateHandler = new ConstantBlindedStateHandler(
+                        SVController,
+                        context,
+                        confidentialityScheme,
+                        context.getLeader(),
+                        SERVER_STATE_LISTENING_PORT,
+                        this
+                );
+            blindedStateHandler.start();
         }
     }
 
@@ -469,6 +467,14 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
                         oldView,
                         newView
                 );
+                int[] oldMembers = context.getContexts()[0].getMembers();
+                int[] newMembers = context.getContexts()[1].getMembers();
+                logger.info("Old members: {}", Arrays.toString(oldMembers));
+                logger.info("New members: {}", Arrays.toString(newMembers));
+                int processId = SVController.getStaticConf().getProcessId();
+                if (Utils.isIn(processId, newMembers)) {
+                    startBlindedStateHandler(context);
+                }
                 logger.debug("Starting creation of new polynomial with id {} for resharing", id);
                 distributedPolynomial.createNewPolynomial(context);
             }

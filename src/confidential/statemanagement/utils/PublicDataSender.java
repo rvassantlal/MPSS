@@ -44,15 +44,20 @@ public class PublicDataSender extends Thread {
             long t1, t2;
             out.write(Utils.toBytes(processId));
 
-            t1 = System.nanoTime();
+            long total = 0;
             for (int i = 0; i < nDataToSend; i++) {
                 byte[] state = states.take();
+                t1 = System.nanoTime();
                 out.write(Utils.toBytes(state.length));
                 out.write(state);
+                t2 = System.nanoTime();
+                total += t2 - t1;
             }
+            t1 = System.nanoTime();
             out.flush();
             t2 = System.nanoTime();
-            logger.info("Took {} ms to send public data to {}:{}", (t2 - t1) / 1_000_000.0,
+            total += t2 - t1;
+            logger.info("Took {} ms to send public data to {}:{}", total / 1_000_000.0,
                     receiverServerIp, receiverServerPort);
         } catch (IOException | InterruptedException e) {
             logger.error("Failed to send public data to {}:{}.", receiverServerIp, receiverServerPort, e);
