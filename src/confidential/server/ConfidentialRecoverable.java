@@ -20,7 +20,6 @@ import confidential.encrypted.EncryptedVerifiableShare;
 import confidential.facade.server.ConfidentialSingleExecutable;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.polynomial.DistributedPolynomial;
-import confidential.polynomial.ProposalSetMessage;
 import confidential.statemanagement.ConfidentialSnapshot;
 import confidential.statemanagement.ConfidentialStateLog;
 import confidential.statemanagement.ConfidentialStateManager;
@@ -61,7 +60,6 @@ public final class ConfidentialRecoverable implements SingleExecutable, Recovera
     private int currentF;
     private final boolean useTLSEncryption;
     private final ConfidentialSingleExecutable confidentialExecutor;
-    private DistributedPolynomial distributedPolynomial;
     private boolean isLinearCommitmentScheme;
     // Not the best solution. Requests failed during consensus, will not be removed from this map
     private final Map<Integer, Request> deserializedRequests;
@@ -91,9 +89,8 @@ public final class ConfidentialRecoverable implements SingleExecutable, Recovera
             this.confidentialityScheme = new ServerConfidentialityScheme(processId, replicaContext.getCurrentView());
             this.commitmentScheme = confidentialityScheme.getCommitmentScheme();
             this.isLinearCommitmentScheme = confidentialityScheme.isLinearCommitmentScheme();
-            distributedPolynomial =
-                    new DistributedPolynomial(replicaContext.getSVController(), interServersCommunication,
-                            confidentialityScheme);
+            DistributedPolynomial distributedPolynomial = new DistributedPolynomial(replicaContext.getSVController(), interServersCommunication,
+                    confidentialityScheme);
             new Thread(distributedPolynomial, "Distributed polynomial").start();
             stateManager.setDistributedPolynomial(distributedPolynomial);
             stateManager.setConfidentialityScheme(confidentialityScheme);
@@ -112,25 +109,8 @@ public final class ConfidentialRecoverable implements SingleExecutable, Recovera
             return true;
         Metadata metadata = Metadata.getMessageType(request.getMetadata()[0]);
         logger.debug("Metadata: {}", metadata);
-        if (metadata == Metadata.POLYNOMIAL_PROPOSAL_SET) {
-            Request req = preprocessRequest(request.getContent(), request.getPrivateContent(), request.getSender());
-            if (req == null || req.getType() != MessageType.APPLICATION) {
-                logger.error("Unknown request type to verify");
-                return false;
-            }
-            byte[] m =
-                    Arrays.copyOfRange(req.getPlainData(), 1,
-                            req.getPlainData().length);
-            try (ByteArrayInputStream bis = new ByteArrayInputStream(m);
-                 ObjectInput in = new ObjectInputStream(bis)) {
-                ProposalSetMessage proposalSetMessage = new ProposalSetMessage();
-                proposalSetMessage.readExternal(in);
-                return distributedPolynomial.isValidProposalSet(proposalSetMessage);
-            } catch (IOException | ClassNotFoundException e) {
-                logger.error("Failed to deserialize polynomial message of type " +
-                        "{}", Metadata.POLYNOMIAL_PROPOSAL_SET, e);
-                return false;
-            }
+        if (metadata == Metadata.POLYNOMIAL_PROCESSED_VOTES) {
+            return true;
         } else if (metadata == Metadata.VERIFY) {
             if (!verifyClientsRequests)
                 return true;
@@ -275,9 +255,6 @@ public final class ConfidentialRecoverable implements SingleExecutable, Recovera
     @Override
     public void noOp(int CID, byte[][] operations, MessageContext[] msgCtx) {
         logger.debug("NoOp");
-        //for (int i = 0; i < msgCtx.length; i++)
-        //    logRequest(operations[i], msgCtx[i]);
-
         for (byte[] operation : operations) {
             Object obj = TOMUtil.getObject(operation);
             if (obj instanceof ReconfigureRequest) {

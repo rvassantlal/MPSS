@@ -85,7 +85,6 @@ public class PublicDataReceiver extends Thread {
                         commitments = new byte[len];
                         commitmentHash = readAndComputeHash(in, len, commitments);
                     }
-
                     byte[] commonState = null;
                     byte[] commonStateHash;
 

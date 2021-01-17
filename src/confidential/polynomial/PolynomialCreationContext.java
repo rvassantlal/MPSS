@@ -11,12 +11,14 @@ public class PolynomialCreationContext implements Externalizable {
     private int id;
     private PolynomialContext[] contexts;
     private int leader;
+    private int nPolynomials;
     private PolynomialCreationReason reason;
 
     public PolynomialCreationContext() {}
 
-    public PolynomialCreationContext(int id, int leader, PolynomialCreationReason reason, PolynomialContext... contexts) {
+    public PolynomialCreationContext(int id, int leader, int nPolynomials, PolynomialCreationReason reason, PolynomialContext... contexts) {
         this.id = id;
+        this.nPolynomials = nPolynomials;
         this.contexts = contexts;
         this.leader = leader;
         this.reason = reason;
@@ -32,6 +34,10 @@ public class PolynomialCreationContext implements Externalizable {
 
     public int getLeader() {
         return leader;
+    }
+
+    public int getnPolynomials() {
+        return nPolynomials;
     }
 
     public PolynomialCreationReason getReason() {
@@ -70,6 +76,7 @@ public class PolynomialCreationContext implements Externalizable {
         }
 
         out.writeInt(leader);
+        out.writeInt(nPolynomials);
         out.write((byte)reason.ordinal());
     }
 
@@ -87,6 +94,7 @@ public class PolynomialCreationContext implements Externalizable {
         }
 
         leader = in.readInt();
+        nPolynomials = in.readInt();
         reason = PolynomialCreationReason.getReason(in.read());
     }
 }

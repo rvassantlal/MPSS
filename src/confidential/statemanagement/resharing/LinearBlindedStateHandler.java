@@ -2,6 +2,7 @@ package confidential.statemanagement.resharing;
 
 import bftsmart.reconfiguration.ServerViewController;
 import confidential.polynomial.PolynomialCreationContext;
+import confidential.polynomial.PolynomialPoint;
 import confidential.server.ServerConfidentialityScheme;
 import confidential.statemanagement.ReconstructionCompleted;
 import vss.Utils;
@@ -24,9 +25,9 @@ public class LinearBlindedStateHandler extends BlindedStateHandler {
     private int selectedCommitmentHash;
 
     public LinearBlindedStateHandler(ServerViewController svController, PolynomialCreationContext context,
-                                     VerifiableShare refreshPoint, ServerConfidentialityScheme confidentialityScheme,
+                                     ServerConfidentialityScheme confidentialityScheme,
                                      int stateSenderReplica, int serverPort, ReconstructionCompleted reconstructionCompleted) {
-        super(svController, context, refreshPoint, confidentialityScheme, stateSenderReplica, serverPort, reconstructionCompleted);
+        super(svController, context, confidentialityScheme, stateSenderReplica, serverPort, reconstructionCompleted);
         this.commitments = new HashMap<>(oldQuorum);
     }
 

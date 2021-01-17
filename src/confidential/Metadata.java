@@ -6,7 +6,8 @@ package confidential;
 public enum Metadata {
     VERIFY,
     DOES_NOT_VERIFY,
-    POLYNOMIAL_PROPOSAL_SET;
+    POLYNOMIAL_PROPOSAL_SET,
+    POLYNOMIAL_PROCESSED_VOTES;
 
     public static Metadata[] values = values();
 

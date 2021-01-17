@@ -18,7 +18,6 @@ import confidential.statemanagement.resharing.ConstantBlindedStateHandler;
 import confidential.statemanagement.resharing.LinearBlindedStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import vss.secretsharing.VerifiableShare;
 
 import java.math.BigInteger;
 import java.util.*;
@@ -330,7 +329,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
 
     @Override
     public void onPolynomialCreationSuccess(PolynomialCreationContext context, int consensusId,
-                                            VerifiableShare... points) {
+                                            PolynomialPoint... points) {
         logger.debug("Received my point for {} with id {}", context.getReason(), context.getId());
         if (sequenceNumber.get() <= context.getId())
             sequenceNumber.set(context.getId() + 1);
@@ -352,7 +351,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
                     blindedStateHandler = new LinearBlindedStateHandler(
                             SVController,
                             context,
-                            points[1],
                             confidentialityScheme,
                             context.getLeader(),
                             SERVER_STATE_LISTENING_PORT,
@@ -362,7 +360,6 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
                     blindedStateHandler = new ConstantBlindedStateHandler(
                             SVController,
                             context,
-                            points[1],
                             confidentialityScheme,
                             context.getLeader(),
                             SERVER_STATE_LISTENING_PORT,
@@ -372,12 +369,12 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             }
 
             if (Utils.isIn(processId, oldMembers)) {
-                sendingBlindedState(context, points[0], consensusId);
+                sendingBlindedState(context, points, consensusId);
             }
         }
     }
 
-    private void sendingBlindedState(PolynomialCreationContext creationContext, VerifiableShare blindingShare, int consensusId) {
+    private void sendingBlindedState(PolynomialCreationContext creationContext, PolynomialPoint[] blindingShare, int consensusId) {
         try {
             dt.pauseDecisionDelivery();
 
@@ -422,6 +419,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             public void run() {
                 renewalStartTime = System.nanoTime();
                 int id = sequenceNumber.getAndIncrement();
+                int nPolynomials = 3;
                 PolynomialContext oldView = new PolynomialContext(
                         SVController.getCurrentViewF(),
                         BigInteger.ZERO,
@@ -437,7 +435,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
                 PolynomialCreationContext context = new PolynomialCreationContext(
                         id,
                         tomLayer.execManager.getCurrentLeader(),
-                        PolynomialCreationReason.RESHARING,
+                        nPolynomials, PolynomialCreationReason.RESHARING,
                         oldView,
                         newView
                 );

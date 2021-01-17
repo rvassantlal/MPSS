@@ -8,6 +8,7 @@ import bftsmart.tom.server.defaultservices.CommandsInfo;
 import bftsmart.tom.server.defaultservices.DefaultApplicationState;
 import confidential.ConfidentialData;
 import confidential.Configuration;
+import confidential.polynomial.PolynomialPoint;
 import confidential.server.Request;
 import confidential.server.ServerConfidentialityScheme;
 import confidential.statemanagement.BlindedApplicationState;
@@ -16,7 +17,6 @@ import confidential.statemanagement.utils.HashThread;
 import confidential.statemanagement.utils.PublicDataSender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import vss.Utils;
 import vss.commitment.Commitment;
 import vss.facade.SecretSharingException;
 import vss.secretsharing.Share;
@@ -40,15 +40,16 @@ public class BlindedStateSender extends Thread {
     private final int unSecureServerPort;
     private final int[] receivers;
     private final DefaultApplicationState state;
-    private final VerifiableShare blindingShare;
+    private final PolynomialPoint[] blindingShares;
     private final HashThread commonStateHashThread;
-    private final HashThread commitmentHashThread;
+    private final HashThread[] commitmentHashThread;
     private final boolean iAmStateSender;
     private final ServerConfidentialityScheme confidentialityScheme;
 
     public BlindedStateSender(ServerViewController svController, BigInteger field,
                               int stateReceiverPort, int[] receivers,
-                              DefaultApplicationState state, VerifiableShare blindingShare, ServerConfidentialityScheme confidentialityScheme, boolean iAmStateSender) throws Exception {
+                              DefaultApplicationState state, PolynomialPoint[] blindingShares,
+                              ServerConfidentialityScheme confidentialityScheme, boolean iAmStateSender) throws Exception {
         super("State Sender Thread");
         this.svController = svController;
         this.processId = svController.getStaticConf().getProcessId();
@@ -56,12 +57,15 @@ public class BlindedStateSender extends Thread {
         this.unSecureServerPort = stateReceiverPort;
         this.receivers = receivers;
         this.state = state;
-        this.blindingShare = blindingShare;
+        this.blindingShares = blindingShares;
         this.confidentialityScheme = confidentialityScheme;
         this.iAmStateSender = iAmStateSender;
         this.commonStateHashThread = new HashThread();
         if (Configuration.getInstance().getVssScheme().equals("1")) {//linear scheme
-            this.commitmentHashThread = new HashThread();
+            commitmentHashThread = new HashThread[receivers.length];
+            for (int i = 0; i < receivers.length; i++) {
+                commitmentHashThread[i] = new HashThread();
+            }
         } else {
             this.commitmentHashThread = null;
         }
@@ -72,79 +76,95 @@ public class BlindedStateSender extends Thread {
         logger.debug("Generating blinded state");
         long t1, t2;
         t1 = System.nanoTime();
-        BlindedApplicationState blindedState = createBlindedState(blindingShare, state);
+        BlindedApplicationState[] blindedStates = createBlindedState(blindingShares, state);
         t2 = System.nanoTime();
-        if (blindedState == null) {
+        if (blindedStates == null) {
             logger.error("Failed to generate blinded application state. Exiting state sender thread.");
             return;
         }
         double blindedStateTime = (t2 - t1) / 1_000_000.0;
         logger.info("Took {} ms to compute blinded state", blindedStateTime);
-
         if (!iAmStateSender) {
-            commonStateHashThread.setData(blindedState.getCommonState());
+            byte[] commonState = blindedStates[0].getCommonState();
+            commonStateHashThread.setData(commonState);
             commonStateHashThread.start();
-            commonStateHashThread.update(0, blindedState.getCommonState().length);
+            commonStateHashThread.update(0, commonState.length);
             commonStateHashThread.update(-1, -1);
 
             if (commitmentHashThread != null) {
-                commitmentHashThread.setData(blindedState.getCommitments());
-                commitmentHashThread.start();
-                commitmentHashThread.update(0, blindedState.getCommitments().length);
-                commitmentHashThread.update(-1, -1);
+                for (int i = 0; i < receivers.length; i++) {
+                    byte[] commitments = blindedStates[i].getCommitments();
+                    commitmentHashThread[i].setData(commitments);
+                    commitmentHashThread[i].start();
+                    commitmentHashThread[i].update(0, commitments.length);
+                    commitmentHashThread[i].update(-1, -1);
+                }
             }
         }
 
+        byte[][] serializedBlindedShares = new byte[receivers.length][];
+        int[] nBytes = new int[receivers.length];
         t1 = System.nanoTime();
-        byte[] serializedBlindedShares = serializeBlindedShares(blindedState.getShares());
-        t2 = System.nanoTime();
-        if (serializedBlindedShares == null) {
-            logger.error("Failed to serialized blinded shares");
-            return;
+        for (int i = 0; i < receivers.length; i++) {
+            serializedBlindedShares[i] = serializeBlindedSharesFor(blindedStates[i].getShares(), receivers[i]);
+            if (serializedBlindedShares[i] == null) {
+                logger.error("Failed to serialized blinded shares");
+                return;
+            }
+            nBytes[i] = serializedBlindedShares[i].length;
         }
+        t2 = System.nanoTime();
         double blindedSharesSerializationTime = (t2 - t1) / 1_000_000.0;
-        logger.info("Took {} ms to serialize {} blinded shares", blindedSharesSerializationTime,
-                blindedState.getShares().size());
+        logger.info("Took {} ms to serialize {} blinded shares ({} bytes)", blindedSharesSerializationTime,
+                blindedStates[0].getShares().size(), Arrays.toString(nBytes));
 
         PublicDataSender[] publicDataSenders = new PublicDataSender[receivers.length];
-        logger.debug("Sending {} bytes of serialized blinded shares", serializedBlindedShares.length);
 
         for (int i = 0; i < receivers.length; i++) {
             String receiverIp = svController.getCurrentView().getAddress(receivers[i]).getAddress().getHostAddress();
             int port = unSecureServerPort + receivers[i];
             publicDataSenders[i] = new PublicDataSender(receiverIp, port , processId, 3);
             publicDataSenders[i].start();
-            publicDataSenders[i].sendData(serializedBlindedShares);
+            publicDataSenders[i].sendData(serializedBlindedShares[i]);
         }
 
-        byte[] commitments = blindedState.getCommitments();
+        byte[][] commitments = null;
         if (!iAmStateSender && commitmentHashThread != null) {
-            commitments = commitmentHashThread.getHash();
+            commitments = new byte[receivers.length][];
+            for (int i = 0; i < receivers.length; i++) {
+                commitments[i] = commitmentHashThread[i].getHash();
+            }
         }
-        logger.debug("Sending {} bytes of commitments", commitments.length);
-        for (PublicDataSender publicDataSender : publicDataSenders) {
-            publicDataSender.sendData(commitments);
+        boolean sameCommitments = commitments != null;
+        logger.info("Sending {} bytes of commitments", blindedStates[0].getCommitments().length);
+
+        for (int i = 0; i < receivers.length; i++) {
+            if (!sameCommitments) {
+                byte[] c = blindedStates[i].getCommitments();
+                publicDataSenders[i].sendData(c);
+            } else {
+                publicDataSenders[i].sendData(commitments[i]);
+            }
         }
 
 
         byte[] commonState;
         if (iAmStateSender) {
-            commonState = blindedState.getCommonState();
+            commonState = blindedStates[0].getCommonState();
         } else {
             commonState = commonStateHashThread.getHash();
         }
-        logger.debug("Sending {} bytes of common state", commonState.length);
+        logger.info("Sending {} bytes of common state", commonState.length);
         for (PublicDataSender publicDataSender : publicDataSenders) {
             publicDataSender.sendData(commonState);
         }
         logger.debug("Exiting state sender thread");
     }
 
-    private BlindedApplicationState createBlindedState(VerifiableShare blindingShare, DefaultApplicationState state) {
+    private BlindedApplicationState[] createBlindedState(PolynomialPoint[] blindingShare, DefaultApplicationState state) {
+
         try (ByteArrayOutputStream bosCommonState = new ByteArrayOutputStream();
-             ByteArrayOutputStream bosCommitments = new ByteArrayOutputStream();
-             ObjectOutput outCommonState = new ObjectOutputStream(bosCommonState);
-             ObjectOutput outCommitments = new ObjectOutputStream(bosCommitments)) {
+             ObjectOutput outCommonState = new ObjectOutputStream(bosCommonState)) {
 
             LinkedList<VerifiableShare> sharesToSend = new LinkedList<>();
 
@@ -171,52 +191,73 @@ public class BlindedStateSender extends Thread {
                 outCommonState.writeBoolean(false);
             }
 
-            LinkedList<Share> blindedShares = new LinkedList<>();
-            processShares(sharesToSend, blindingShare, outCommitments, blindedShares);
-
+            RecoveryContribution[] recoveryContributions = processShares(sharesToSend, blindingShare);
             bosCommonState.flush();
-            bosCommitments.flush();
             outCommonState.flush();
-            outCommitments.flush();
-
             byte[] commonStateBytes = bosCommonState.toByteArray();
-            byte[] commitmentsBytes = bosCommitments.toByteArray();
-            return new BlindedApplicationState(
-                    commonStateBytes,
-                    blindedShares,
-                    commitmentsBytes,
-                    state.getLastCheckpointCID(),
-                    state.getLastCID(),
-                    processId
-            );
+
+            BlindedApplicationState[] results = new BlindedApplicationState[receivers.length];
+            for (int i = 0; i < receivers.length; i++) {
+                try (ByteArrayOutputStream bosCommitments = new ByteArrayOutputStream();
+                     ObjectOutput outCommitments = new ObjectOutputStream(bosCommitments)) {
+                    RecoveryContribution recoveryContribution = recoveryContributions[i];
+                    LinkedList<Share> blindedShares = new LinkedList<>();
+
+                    VerifiableShare[] shares = recoveryContribution.getShares();
+                    Commitment[] rCommitments = recoveryContribution.getRCommitments();
+                    for (int j = 0; j < shares.length; j++) {
+                        vss.Utils.writeCommitment(shares[j].getCommitments(), outCommitments);
+                        vss.Utils.writeCommitment(rCommitments[j], outCommitments);
+                        blindedShares.offer(shares[j].getShare());
+                    }
+                    bosCommitments.flush();
+                    outCommitments.flush();
+                    byte[] commitmentsBytes = bosCommitments.toByteArray();
+                    results[i] = new BlindedApplicationState(
+                            commonStateBytes,
+                            blindedShares,
+                            commitmentsBytes
+                    );
+                }
+            }
+            return results;
         } catch (IOException | InterruptedException e) {
             logger.error("Failed to create Blinded State", e);
             return null;
         }
     }
 
-    private void processShares(LinkedList<VerifiableShare> sharesToSend, VerifiableShare blindingVShare,
-                               ObjectOutput outCommitments,
-                               LinkedList<Share> blindedShares) throws InterruptedException, IOException {
+    private RecoveryContribution[] processShares(LinkedList<VerifiableShare> sharesToSend,
+                                                 PolynomialPoint[] blindingShares) throws InterruptedException, IOException {
         ExecutorService executorService = Executors
                 .newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
+
         int nShares = sharesToSend.size();
-        VerifiableShare[] blindedSharesToSend = new VerifiableShare[nShares];
+        VerifiableShare[][] blindedSharesToSend = new VerifiableShare[receivers.length][nShares];
+        Commitment[][] rCommitments = new Commitment[receivers.length][nShares];
+
         Iterator<VerifiableShare> it = sharesToSend.iterator();
         CountDownLatch sharesProcessedCounter = new CountDownLatch(nShares);
-        Commitment blindingCommitment = blindingVShare.getCommitments();
-        Share blindingShare = blindingVShare.getShare();
+        int nBlindingPolynomials = blindingShares.length;
         for (int i = 0; i < nShares; i++) {
             int finalI = i;
             VerifiableShare vs = it.next();
+            PolynomialPoint blindingShare = blindingShares[i % nBlindingPolynomials];
             executorService.execute(() -> {
                 try {
                     Commitment commitment = vs.getCommitments();
-                    Commitment blindedCommitment = confidentialityScheme.getCommitmentScheme()
-                            .sumCommitments(blindingCommitment, commitment);
-                    vs.getShare().setShare(vs.getShare().getShare().add(blindingShare.getShare()).mod(field));
-                    vs.setCommitments(blindedCommitment);
-                    blindedSharesToSend[finalI] = vs;
+                    Share share = vs.getShare();
+                    for (int j = 0; j < receivers.length; j++) {
+                        int receiver = receivers[j];
+                        Commitment blindedCommitment = confidentialityScheme.getCommitmentScheme()
+                                .sumCommitments(blindingShare.getCommitments(-1), commitment);
+                        Commitment rCommitment = blindingShare.getCommitments(receiver);
+                        BigInteger nBs = share.getShare().add(blindingShare.getShares(receiver).getShare()).mod(field);
+                        Share bs = new Share(vs.getShare().getShareholder(), nBs);
+                        VerifiableShare verifiableShare = new VerifiableShare(bs, blindedCommitment, null);
+                        rCommitments[j][finalI] = rCommitment;
+                        blindedSharesToSend[j][finalI] = verifiableShare;
+                    }
                     sharesProcessedCounter.countDown();
                 } catch (SecretSharingException e) {
                     logger.error("Failed to create blinded share.", e);
@@ -225,10 +266,13 @@ public class BlindedStateSender extends Thread {
         }
         sharesProcessedCounter.await();
         executorService.shutdown();
-        for (VerifiableShare verifiableShare : blindedSharesToSend) {
-            Utils.writeCommitment(verifiableShare.getCommitments(), outCommitments);
-            blindedShares.add(verifiableShare.getShare());
+        RecoveryContribution[] recoveryContributions = new RecoveryContribution[receivers.length];
+        for (int i = 0; i < receivers.length; i++) {
+            VerifiableShare[] verifiableShares = blindedSharesToSend[i];
+            Commitment[] commitments = rCommitments[i];
+            recoveryContributions[i] = new RecoveryContribution(verifiableShares, commitments);
         }
+        return recoveryContributions;
     }
 
     private void serializeSnapshot(ConfidentialSnapshot snapshot, ObjectOutput outCommonState,
@@ -285,7 +329,7 @@ public class BlindedStateSender extends Thread {
         }
     }
 
-    private byte[] serializeBlindedShares(LinkedList<Share> blindedShares) {
+    private byte[] serializeBlindedSharesFor(LinkedList<Share> blindedShares, int server) {
         try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
              ObjectOutputStream out = new ObjectOutputStream(bos)) {
             out.writeInt(blindedShares.size());
@@ -294,9 +338,10 @@ public class BlindedStateSender extends Thread {
             }
             out.flush();
             bos.flush();
-            return bos.toByteArray();
+            byte[] serializedBlindedShares = bos.toByteArray();
+            return confidentialityScheme.encryptDataFor(server, serializedBlindedShares);
         } catch (IOException e) {
-            logger.error("Failed to serialize Shares");
+            logger.error("Failed to serialize and encrypt Shares for {}", server, e);
             return null;
         }
     }

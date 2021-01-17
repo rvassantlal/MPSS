@@ -1,160 +1,174 @@
 package confidential.polynomial.creator;
 
+import confidential.Utils;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.polynomial.*;
 import confidential.server.ServerConfidentialityScheme;
+import org.bouncycastle.util.Arrays;
 import vss.commitment.Commitment;
+import vss.facade.SecretSharingException;
 import vss.polynomial.Polynomial;
 import vss.secretsharing.Share;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.security.SecureRandom;
+import java.util.HashMap;
 import java.util.Map;
 
 public class ResharingPolynomialCreator extends PolynomialCreator {
-    private final ViewStatus viewStatus;
 
     ResharingPolynomialCreator(PolynomialCreationContext creationContext, int processId, SecureRandom rndGenerator, ServerConfidentialityScheme confidentialityScheme, InterServersCommunication serversCommunication, PolynomialCreationListener creationListener) {
         super(creationContext, processId, rndGenerator, confidentialityScheme, serversCommunication, creationListener,
                 creationContext.getContexts()[0].getMembers().length, creationContext.getContexts()[0].getF());
-        if (creationContext == null)
-            viewStatus = ViewStatus.IN_NEW;
-        else {
-            boolean inOldView = isInView(processId, creationContext.getContexts()[0].getMembers());
-            boolean inNewView = isInView(processId, creationContext.getContexts()[1].getMembers());
-            if (inOldView && inNewView)
-                viewStatus = ViewStatus.IN_BOTH;
-            else
-                viewStatus = ViewStatus.IN_OLD;
-        }
-    }
-
-    @Override
-    int[] getMembers(boolean proposalMembers) {
-        return proposalMembers ? creationContext.getContexts()[0].getMembers() : allMembers;
     }
 
     @Override
     ProposalMessage computeProposalMessage() {
-        PolynomialContext qOldContext = creationContext.getContexts()[0];
-        PolynomialContext qNewContext = creationContext.getContexts()[1];
-        BigInteger q = getRandomNumber();
+        PolynomialContext oldContext = creationContext.getContexts()[0];
+        PolynomialContext newContext = creationContext.getContexts()[1];
+        int nPolynomials = creationContext.getnPolynomials();
+        int[] oldServers = oldContext.getMembers();
+        int[] newServers = newContext.getMembers();
+        int oldN = oldServers.length;
+        int newN = newServers.length;
+        BigInteger[] newShareholders = new BigInteger[newN];
+        BigInteger[] oldShareholders = new BigInteger[oldN];
+        for (int i = 0; i < newN; i++) {
+            newShareholders[i] = confidentialityScheme.getShareholder(newServers[i]);
+        }
+        for (int i = 0; i < oldN; i++) {
+            oldShareholders[i] = confidentialityScheme.getShareholder(oldServers[i]);
+        }
 
-        //generating polynomials
-        Polynomial qOld = new Polynomial(field, qOldContext.getF(), q, rndGenerator);
-        Polynomial qNew = new Polynomial(field, qNewContext.getF(), q, rndGenerator);
+        //generating polynomials and their commitments
+        //(Additional witnesses are generated in Kate et al.scheme to valid point (0, 0) in Q and (i, 0) in each R
+        Polynomial[] qs = new Polynomial[nPolynomials];
+        Polynomial[][] rs = new Polynomial[nPolynomials][newN];
+        Commitment[] qCommitments = new Commitment[nPolynomials];
+        Commitment[][] rCommitments = new Commitment[nPolynomials][newN];
+        for (int i = 0; i < nPolynomials; i++) {
+            Polynomial q = new Polynomial(field, oldContext.getF(), BigInteger.ZERO, rndGenerator);
+            qs[i] = q;
+            qCommitments[i] = commitmentScheme.generateCommitments(q, BigInteger.ZERO);
+            for (int j = 0; j < newN; j++) {
+                Polynomial r = generateRecoveryPolynomialFor(newShareholders[j], oldContext.getF());
+                rs[i][j] = r;
+                rCommitments[i][j] = commitmentScheme.generateCommitments(r, newShareholders[j]);
+            }
+        }
 
-        //generating commitments (BigInteger.Zero to create witness for (0,q) in Kate et al. scheme)
-        Commitment qOldCommitment = commitmentScheme.generateCommitments(qOld, BigInteger.ZERO);
-        Commitment qNewCommitment = commitmentScheme.generateCommitments(qNew, BigInteger.ZERO);
+        //generating encrypted shares
+        Proposal[] proposals = new Proposal[nPolynomials];
 
-        //generating shares
-        Map<Integer, byte[]> qOldPoints = computeShares(qOld, qOldContext.getMembers());
-        Map<Integer, byte[]> qNewPoints = computeShares(qNew, qNewContext.getMembers());
+        for (int i = 0; i < nPolynomials; i++) {
+            Polynomial q = qs[i];
+            Polynomial[] r = rs[i];
+            Map<Integer, byte[]> shares = new HashMap<>(oldN);
+            Commitment[] commitments = new Commitment[newN + 1];
+            commitments[0] = qCommitments[i];
+            System.arraycopy(rCommitments[i], 0, commitments, 1, newN);
 
-        Proposal forOldView = new Proposal(qOldPoints, qOldCommitment);
-        Proposal forNewView = new Proposal(qNewPoints, qNewCommitment);
+            for (int o = 0; o < oldN; o++) {
+                BigInteger[] vector = new BigInteger[newN];
+                BigInteger shareholder = oldShareholders[o];
+                for (int n = 0; n < newN; n++) {
+                    vector[n] = q.evaluateAt(shareholder).add(r[n].evaluateAt(shareholder)).mod(field);
+                }
+                shares.put(oldServers[o], encryptVectorFor(oldServers[o], vector));
+            }
+            proposals[i] = new Proposal(shares, commitments);
+        }
 
         return new ProposalMessage(
                 creationContext.getId(),
                 processId,
-                forOldView,
-                forNewView
+                proposals
         );
     }
 
-    @Override
-    boolean validateProposal(ProposalMessage proposalMessage) {
-        Proposal oldViewProposal = proposalMessage.getProposals()[0];
-        Proposal newViewProposal = proposalMessage.getProposals()[1];
-        int proposalSender = proposalMessage.getSender();
-
-        BigInteger[] decryptedProposalPoints = null;
-        Share oldViewShare, newViewShare;
-
-        switch (viewStatus) {
-            case IN_OLD:
-                oldViewShare = getDecryptedShare(proposalSender, oldViewProposal);
-                if (oldViewShare == null)
-                    return false;
-                if (isValidShare(oldViewProposal.getCommitments(), oldViewShare)
-                        && doesEncodeSameSecret(oldViewProposal, newViewProposal)) {
-                    validProposals.add(proposalSender);
-                    logger.debug("Proposal from {} is valid", proposalSender);
-                } else {
-                    invalidProposals.add(proposalSender);
-                    logger.warn("Proposal from {} is invalid", proposalSender);
-                    return false;
-                }
-                decryptedProposalPoints = new BigInteger[1];
-                decryptedProposalPoints[0] = oldViewShare.getShare();
-                break;
-            case IN_NEW:
-                newViewShare = getDecryptedShare(proposalSender, newViewProposal);
-                if (newViewShare == null)
-                    return false;
-                if (isValidShare(newViewProposal.getCommitments(), newViewShare)
-                        && doesEncodeSameSecret(oldViewProposal, newViewProposal)) {
-                    validProposals.add(proposalSender);
-                    logger.debug("Proposal from {} is valid", proposalSender);
-                } else {
-                    invalidProposals.add(proposalSender);
-                    logger.warn("Proposal from {} is invalid", proposalSender);
-                    return false;
-                }
-                decryptedProposalPoints = new BigInteger[1];
-                decryptedProposalPoints[0] = newViewShare.getShare();
-                break;
-            case IN_BOTH:
-                oldViewShare = getDecryptedShare(proposalSender, oldViewProposal);
-                if (oldViewShare == null)
-                    return false;
-                newViewShare = getDecryptedShare(proposalSender, newViewProposal);
-                if (newViewShare == null)
-                    return false;
-                if (isValidShare(oldViewProposal.getCommitments(), oldViewShare)
-                        && isValidShare(newViewProposal.getCommitments(), newViewShare)
-                        && doesEncodeSameSecret(oldViewProposal, newViewProposal)) {
-                    validProposals.add(proposalSender);
-                    logger.debug("Proposal from {} is valid", proposalSender);
-                } else {
-                    invalidProposals.add(proposalSender);
-                    logger.warn("Proposal from {} is invalid", proposalSender);
-                    return false;
-                }
-                decryptedProposalPoints = new BigInteger[2];
-                decryptedProposalPoints[0] = oldViewShare.getShare();
-                decryptedProposalPoints[1] = newViewShare.getShare();
-                break;
+    private byte[] encryptVectorFor(int server, BigInteger[] vector) {
+        int totalBytes = vector.length * 4 + 4;
+        for (BigInteger v : vector) {
+            totalBytes += v.toByteArray().length;
         }
-        decryptedPoints.put(proposalSender, decryptedProposalPoints);
-        return true;
-    }
-
-    private boolean doesEncodeSameSecret(Proposal... proposals) {
-        Commitment[] commitments = new Commitment[proposals.length];
-        for (int i = 0; i < proposals.length; i++) {
-            commitments[i] = proposals[i].getCommitments();
-        }
-        return commitmentScheme.checkValidityOfPolynomialsProperty(BigInteger.ZERO, commitments);
-    }
-
-    private Share getDecryptedShare(int proposalSender, Proposal proposal) {
-        byte[] encryptedPoint = proposal.getPoints().get(processId);
-        byte[] decryptedPoint = confidentialityScheme.decryptData(processId, encryptedPoint);
-        if (decryptedPoint == null) {
-            logger.error("Failed to decrypt my point on Q from {}", proposalSender);
+        try (ByteArrayOutputStream bos = new ByteArrayOutputStream(totalBytes)) {
+            bos.write(Utils.toBytes(vector.length));
+            for (BigInteger v : vector) {
+                bos.write(Utils.toBytes(v.toByteArray().length));
+                bos.write(v.toByteArray());
+            }
+            bos.flush();
+            byte[] b = bos.toByteArray();
+            return confidentialityScheme.encryptDataFor(server, b);
+        } catch (IOException e) {
+            logger.error("Failed to encrypt vector", e);
             return null;
         }
-        BigInteger point = new BigInteger(decryptedPoint);
-        return new Share(shareholderId, point);
     }
 
-    private boolean isInView(int member, int[] view) {
-        for (int i : view) {
-            if (i == member)
-                return true;
+    private BigInteger[] decryptVectorFor(int server, byte[] encryptedVector) {
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(confidentialityScheme
+                .decryptData(server, encryptedVector))) {
+            int nValues = Utils.toNumber(Utils.readNBytes(4, bis));
+            BigInteger[] vector = new BigInteger[nValues];
+            for (int i = 0; i < nValues; i++) {
+                int len = Utils.toNumber(Utils.readNBytes(4, bis));
+                vector[i] = new BigInteger(Utils.readNBytes(len, bis));
+            }
+            return vector;
+        } catch (IOException e) {
+            logger.error("Failed to decrypted vector", e);
+            return null;
         }
-        return false;
+    }
+
+    private Polynomial generateRecoveryPolynomialFor(BigInteger shareholder, int degree) {
+        Polynomial tempPolynomial = new Polynomial(field, degree, BigInteger.ZERO, rndGenerator);
+        BigInteger independentTerm = tempPolynomial.evaluateAt(shareholder).negate();
+
+        BigInteger[] tempCoefficients = tempPolynomial.getCoefficients();
+        BigInteger[] coefficients = Arrays.copyOfRange(tempCoefficients,
+                tempCoefficients.length - tempPolynomial.getDegree() - 1, tempCoefficients.length - 1);
+        return new Polynomial(field, independentTerm, coefficients);
+    }
+
+    @Override
+    void validateProposal(ProposalMessage proposalMessage) {
+        Proposal[] proposals = proposalMessage.getProposals();
+        int newN = creationContext.getContexts()[1].getMembers().length;
+        Share share = new Share(confidentialityScheme.getMyShareholderId(), null);
+        for (int i = 0; i < creationContext.getnPolynomials(); i++) {
+            Proposal proposal = proposals[i];
+            Map<Integer, BigInteger[]> points = decryptedPoints.get(i);
+            if (points == null) {
+                points = new HashMap<>(creationContext.getContexts()[0].getMembers().length);
+                decryptedPoints.put(i, points);
+            }
+            byte[] encryptedVector = proposal.getPoints().get(processId);
+            BigInteger[] decryptedVector = decryptVectorFor(processId, encryptedVector);
+            if (decryptedVector == null) {
+                logger.error("Failed to decrypt vector");
+                return;
+            }
+            points.put(proposalMessage.getSender(), decryptedVector);
+            Commitment[] commitments = proposal.getCommitments();
+
+            for (int j = 0; j < newN; j++) {
+                share.setShare(decryptedVector[j]);
+                try {
+                    Commitment commitment = commitmentScheme.sumCommitments(commitments[0], commitments[j + 1]);
+                    if (!commitmentScheme.checkValidityWithoutPreComputation(share, commitment)) {
+                        logger.warn("Proposal from {} is invalid", proposalMessage.getSender());
+                        invalidProposals.add(proposalMessage.getSender());
+                        return;
+                    }
+                } catch (SecretSharingException e) {
+                    logger.error("Failed to sum commitments", e);
+                }
+            }
+        }
     }
 }

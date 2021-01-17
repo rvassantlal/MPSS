@@ -2,6 +2,7 @@ package confidential;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * @author Robin
@@ -32,7 +33,7 @@ public class Utils {
         return number;
     }
 
-    public static byte[] readNBytes(int n, BufferedInputStream stream) throws IOException {
+    public static byte[] readNBytes(int n, InputStream stream) throws IOException {
         byte[] result = new byte[n];
         int offset = 0;
         while (n > 0) {

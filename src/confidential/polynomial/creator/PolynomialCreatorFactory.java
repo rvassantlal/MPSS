@@ -3,6 +3,7 @@ package confidential.polynomial.creator;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.polynomial.PolynomialCreationContext;
 import confidential.polynomial.PolynomialCreationListener;
+import confidential.polynomial.PolynomialCreationReason;
 import confidential.server.ServerConfidentialityScheme;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,28 +22,17 @@ public class PolynomialCreatorFactory {
                                               ServerConfidentialityScheme confidentialityScheme,
                                               InterServersCommunication serversCommunication,
                                               PolynomialCreationListener creationListener) {
-        switch (context.getReason()) {
-            case RECOVERY:
-                return new RecoveryPolynomialCreator(
-                        context,
-                        processId,
-                        rndGenerator,
-                        confidentialityScheme,
-                        serversCommunication,
-                        creationListener
-                );
-            case RESHARING:
-                return new ResharingPolynomialCreator(
-                        context,
-                        processId,
-                        rndGenerator,
-                        confidentialityScheme,
-                        serversCommunication,
-                        creationListener
-                );
-            default:
-                logger.error("Unknown polynomial creation reason {}", context.getReason());
-                return null;
+        if (context.getReason() == PolynomialCreationReason.RESHARING) {
+            return new ResharingPolynomialCreator(
+                    context,
+                    processId,
+                    rndGenerator,
+                    confidentialityScheme,
+                    serversCommunication,
+                    creationListener
+            );
         }
+        logger.error("Unknown polynomial creation reason {}", context.getReason());
+        return null;
     }
 }

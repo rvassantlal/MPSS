@@ -2,6 +2,7 @@ package confidential.statemanagement.resharing;
 
 import bftsmart.reconfiguration.ServerViewController;
 import confidential.polynomial.PolynomialCreationContext;
+import confidential.polynomial.PolynomialPoint;
 import confidential.server.ServerConfidentialityScheme;
 import confidential.statemanagement.ReconstructionCompleted;
 import vss.Utils;
@@ -20,9 +21,9 @@ public class ConstantBlindedStateHandler extends BlindedStateHandler {
     private final Map<Integer, ObjectInput> commitmentsStreams;
 
     public ConstantBlindedStateHandler(ServerViewController svController, PolynomialCreationContext context,
-                                       VerifiableShare refreshPoint, ServerConfidentialityScheme confidentialityScheme,
+                                       ServerConfidentialityScheme confidentialityScheme,
                                        int stateSenderReplica, int serverPort, ReconstructionCompleted reconstructionCompleted) {
-        super(svController, context, refreshPoint, confidentialityScheme, stateSenderReplica, serverPort, reconstructionCompleted);
+        super(svController, context, confidentialityScheme, stateSenderReplica, serverPort, reconstructionCompleted);
         this.commitmentsStreams = new HashMap<>(oldQuorum);
     }
 

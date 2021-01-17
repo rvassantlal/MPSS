@@ -12,11 +12,11 @@ import java.util.Map;
 
 public class Proposal implements Externalizable {
     private Map<Integer, byte[]> points;
-    private Commitment commitments;
+    private Commitment[] commitments;
 
     public Proposal() { }
 
-    public Proposal(Map<Integer, byte[]> points, Commitment commitments) {
+    public Proposal(Map<Integer, byte[]> points, Commitment... commitments) {
         this.points = points;
         this.commitments = commitments;
     }
@@ -25,7 +25,7 @@ public class Proposal implements Externalizable {
         return points;
     }
 
-    public Commitment getCommitments() {
+    public Commitment[] getCommitments() {
         return commitments;
     }
 
@@ -39,8 +39,10 @@ public class Proposal implements Externalizable {
             out.write(b);
 
         }
-
-        Utils.writeCommitment(commitments, out);
+        out.writeInt(commitments.length);
+        for (Commitment commitment : commitments) {
+            Utils.writeCommitment(commitment, out);
+        }
     }
 
     @Override
@@ -56,6 +58,9 @@ public class Proposal implements Externalizable {
                 points.put(shareholder, b);
             }
         }
-        commitments = Utils.readCommitment(in);
+        commitments = new Commitment[in.readInt()];
+        for (int i = 0; i < commitments.length; i++) {
+            commitments[i] = Utils.readCommitment(in);
+        }
     }
 }
