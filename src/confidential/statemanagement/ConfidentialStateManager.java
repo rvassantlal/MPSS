@@ -12,10 +12,11 @@ import confidential.Configuration;
 import confidential.Utils;
 import confidential.polynomial.*;
 import confidential.server.ServerConfidentialityScheme;
-import confidential.statemanagement.resharing.BlindedStateHandler;
-import confidential.statemanagement.resharing.BlindedStateSender;
-import confidential.statemanagement.resharing.ConstantBlindedStateHandler;
-import confidential.statemanagement.resharing.LinearBlindedStateHandler;
+import confidential.statemanagement.resharing.*;
+import confidential.statemanagement.resharing.singlepolynomial.SinglePolynomialBlindedStateHandler;
+import confidential.statemanagement.resharing.singlepolynomial.SinglePolynomialBlindedStateSender;
+import confidential.statemanagement.resharing.singlepolynomial.SinglePolynomialConstantBlindedStateHandler;
+import confidential.statemanagement.resharing.singlepolynomial.SinglePolynomialLinearBlindedStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -346,26 +347,49 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             logger.info("New members: {}", Arrays.toString(newMembers));
             int processId = SVController.getStaticConf().getProcessId();
             if (Utils.isIn(processId, newMembers)) {
-                BlindedStateHandler blindedStateHandler;
-                if (Configuration.getInstance().getVssScheme().equals("1"))
-                    blindedStateHandler = new LinearBlindedStateHandler(
-                            SVController,
-                            context,
-                            confidentialityScheme,
-                            context.getLeader(),
-                            SERVER_STATE_LISTENING_PORT,
-                            this
-                    );
-                else
-                    blindedStateHandler = new ConstantBlindedStateHandler(
-                            SVController,
-                            context,
-                            confidentialityScheme,
-                            context.getLeader(),
-                            SERVER_STATE_LISTENING_PORT,
-                            this
-                    );
-                blindedStateHandler.start();
+                if (Configuration.getInstance().getNPolynomials() == 1) {
+                    SinglePolynomialBlindedStateHandler blindedStateHandler;
+                    if (Configuration.getInstance().getVssScheme().equals("1"))
+                        blindedStateHandler = new SinglePolynomialLinearBlindedStateHandler(
+                                SVController,
+                                context,
+                                confidentialityScheme,
+                                context.getLeader(),
+                                SERVER_STATE_LISTENING_PORT,
+                                this
+                        );
+                    else
+                        blindedStateHandler = new SinglePolynomialConstantBlindedStateHandler(
+                                SVController,
+                                context,
+                                confidentialityScheme,
+                                context.getLeader(),
+                                SERVER_STATE_LISTENING_PORT,
+                                this
+                        );
+                    blindedStateHandler.start();
+                } else {
+                    BlindedStateHandler blindedStateHandler;
+                    if (Configuration.getInstance().getVssScheme().equals("1"))
+                        blindedStateHandler = new LinearBlindedStateHandler(
+                                SVController,
+                                context,
+                                confidentialityScheme,
+                                context.getLeader(),
+                                SERVER_STATE_LISTENING_PORT,
+                                this
+                        );
+                    else
+                        blindedStateHandler = new ConstantBlindedStateHandler(
+                                SVController,
+                                context,
+                                confidentialityScheme,
+                                context.getLeader(),
+                                SERVER_STATE_LISTENING_PORT,
+                                this
+                        );
+                    blindedStateHandler.start();
+                }
             }
 
             if (Utils.isIn(processId, oldMembers)) {
@@ -387,9 +411,15 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
 
             int[] receivers = creationContext.getContexts()[1].getMembers();
             boolean iAmStateSender = creationContext.getLeader() == SVController.getStaticConf().getProcessId();
-            new BlindedStateSender(SVController, confidentialityScheme.getField(), SERVER_STATE_LISTENING_PORT,
-                    receivers, appState, blindingShare, confidentialityScheme, iAmStateSender)
-                    .start();
+            if (Configuration.getInstance().getNPolynomials() == 1) {
+                new SinglePolynomialBlindedStateSender(SVController, confidentialityScheme.getField(),
+                        SERVER_STATE_LISTENING_PORT, receivers, appState, blindingShare[0], confidentialityScheme,
+                        iAmStateSender).start();
+            } else {
+                new BlindedStateSender(SVController, confidentialityScheme.getField(), SERVER_STATE_LISTENING_PORT,
+                        receivers, appState, blindingShare, confidentialityScheme, iAmStateSender)
+                        .start();
+            }
         } catch (Exception e) {
             logger.error("Failed to send blinded state.", e);
         }
@@ -419,7 +449,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
             public void run() {
                 renewalStartTime = System.nanoTime();
                 int id = sequenceNumber.getAndIncrement();
-                int nPolynomials = 3;
+                int nPolynomials = Configuration.getInstance().getNPolynomials();
                 PolynomialContext oldView = new PolynomialContext(
                         SVController.getCurrentViewF(),
                         BigInteger.ZERO,

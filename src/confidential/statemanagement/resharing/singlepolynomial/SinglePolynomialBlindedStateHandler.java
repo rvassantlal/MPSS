@@ -1,4 +1,4 @@
-package confidential.statemanagement.resharing;
+package confidential.statemanagement.resharing.singlepolynomial;
 
 import bftsmart.consensus.messages.ConsensusMessage;
 import bftsmart.reconfiguration.ServerViewController;
@@ -41,7 +41,7 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-public abstract class BlindedStateHandler extends Thread implements PublicStateListener {
+public abstract class SinglePolynomialBlindedStateHandler extends Thread implements PublicStateListener {
     protected final Logger logger = LoggerFactory.getLogger("confidential");
 
     protected final int oldThreshold;
@@ -73,13 +73,14 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
 
     private PublicDataReceiver publicDataReceiver;
     private final ReconstructionCompleted reconstructionListener;
+    private Commitment transferPolynomialCommitments;
 
-    public BlindedStateHandler(ServerViewController svController,
-                               PolynomialCreationContext context,
-                               ServerConfidentialityScheme confidentialityScheme,
-                               int stateSenderReplica,
-                               int serverPort,
-                               ReconstructionCompleted reconstructionListener) {
+    public SinglePolynomialBlindedStateHandler(ServerViewController svController,
+                                               PolynomialCreationContext context,
+                                               ServerConfidentialityScheme confidentialityScheme,
+                                               int stateSenderReplica,
+                                               int serverPort,
+                                               ReconstructionCompleted reconstructionListener) {
         super("Blinded State Handler Thread");
         this.reconstructionListener = reconstructionListener;
         this.oldThreshold = context.getContexts()[0].getF();
@@ -221,14 +222,14 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
             }
 
             //Collecting all commitments
+            Map<BigInteger, Commitment> rCommitments = readNextCommitment();
+            transferPolynomialCommitments = commitmentScheme.combineCommitments(rCommitments);
+
             Map<BigInteger, Commitment[]> allBlindedCommitments = new HashMap<>(stillValidSenders.size());
-            Map<BigInteger, Commitment[]> allRCommitments = new HashMap<>(stillValidSenders.size());
             Commitment[] commitmentTemp;
             Map<BigInteger, Commitment> commitments;
-            Map<BigInteger, Commitment> rCommitments;
             for (int i = 0; i < nShares; i++) {
                 commitments = readNextCommitment();
-                rCommitments = readNextCommitment();
                 for (Map.Entry<BigInteger, Commitment> commitment : commitments.entrySet()) {
                     commitmentTemp = allBlindedCommitments.get(commitment.getKey());
                     if (commitmentTemp == null) {
@@ -237,20 +238,12 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
                     }
                     commitmentTemp[i] = commitment.getValue();
                 }
-                for (Map.Entry<BigInteger, Commitment> commitment : rCommitments.entrySet()) {
-                    commitmentTemp = allRCommitments.get(commitment.getKey());
-                    if (commitmentTemp == null) {
-                        commitmentTemp = new Commitment[nShares];
-                        allRCommitments.put(commitment.getKey(), commitmentTemp);
-                    }
-                    commitmentTemp[i] = commitment.getValue();
-                }
             }
 
             long t1, t2;
             t1 = System.nanoTime();
             Iterator<VerifiableShare> refreshedShares = refreshShares(nShares, allBlindedShares,
-                    allBlindedCommitments, allRCommitments);
+                    allBlindedCommitments);
             t2 = System.nanoTime();
             if (refreshedShares == null) {
                 logger.error("Failed to refresh shares");
@@ -296,8 +289,7 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
     }
 
     private Iterator<VerifiableShare> refreshShares(int nShares, Map<Integer, Share[]> allBlindedShares,
-                                                    Map<BigInteger, Commitment[]> allBlindedCommitments,
-                                                    Map<BigInteger, Commitment[]> allRCommitments)
+                                                    Map<BigInteger, Commitment[]> allBlindedCommitments)
             throws InterruptedException {
         ExecutorService executorService = Executors
                 .newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
@@ -320,17 +312,15 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
             int finalI = i;
             Map<Integer, Share> blindedShares = new HashMap<>(stillValidSenders.size());
             Map<BigInteger, Commitment> blindedCommitments = new HashMap<>(stillValidSenders.size());
-            Map<BigInteger, Commitment> rCommitments = new HashMap<>(stillValidSenders.size());
             for (Integer server : servers) {
                 blindedShares.put(server, allBlindedShares.get(server)[i]);
             }
             for (BigInteger shareholder : shareholders) {
                 blindedCommitments.put(shareholder, allBlindedCommitments.get(shareholder)[i]);
-                rCommitments.put(shareholder, allRCommitments.get(shareholder)[i]);
             }
             executorService.execute(() -> {
                 try {
-                    VerifiableShare vs = recoverShare(blindedShares, blindedCommitments, rCommitments);
+                    VerifiableShare vs = recoverShare(blindedShares, blindedCommitments);
                     if (vs == null) {
                         return;
                     }
@@ -431,8 +421,8 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
     }
 
     private VerifiableShare recoverShare(Map<Integer, Share> allBlindedShares,
-                                         Map<BigInteger, Commitment> allBlindedCommitments,
-                                         Map<BigInteger, Commitment> rCommitments) throws IOException, ClassNotFoundException {
+                                         Map<BigInteger, Commitment> allBlindedCommitments)
+            throws IOException, ClassNotFoundException {
         try {
             int corruptedServers = this.corruptedServers.get();
             Share[] blindedShares = new Share[oldThreshold + (corruptedServers < oldThreshold ? 2 : 1)];
@@ -448,14 +438,12 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
             BigInteger recoveredShare;
             Map<BigInteger, Commitment> validCommitments;
 
-
             if (polynomial.getDegree() != oldThreshold) {
                 blindedShares = new Share[oldThreshold + 1];
                 validCommitments = new HashMap<>(oldThreshold + 1);
                 Commitment combinedBlindedCommitments = commitmentScheme.combineCommitments(allBlindedCommitments);
-                Commitment combinedRCommitments = commitmentScheme.combineCommitments(rCommitments);
                 Commitment verificationCommitment = commitmentScheme.sumCommitments(combinedBlindedCommitments,
-                        combinedRCommitments);
+                        transferPolynomialCommitments);
                 j = 0;
                 Set<Integer> invalidServers = new HashSet<>(oldThreshold);
                 for (Map.Entry<Integer, Share> entry : allBlindedShares.entrySet()) {
@@ -469,7 +457,6 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
                     } else {
                         logger.error("Server {} sent me an invalid share", server);
                         allBlindedCommitments.remove(shareholder);
-                        rCommitments.remove(shareholder);
                         this.corruptedServers.incrementAndGet();
                         invalidServers.add(server);
                         stillValidSenders.remove(server);
@@ -496,9 +483,8 @@ public abstract class BlindedStateHandler extends Thread implements PublicStateL
                 commitment = commitmentScheme.recoverCommitment(shareholderId, validCommitments);
             } catch (SecretSharingException e) { //there is/are invalid witness(es)
                 Commitment combinedBlindedCommitments = commitmentScheme.combineCommitments(allBlindedCommitments);
-                Commitment combinedRCommitments = commitmentScheme.combineCommitments(rCommitments);
                 Commitment verificationCommitment = commitmentScheme.sumCommitments(combinedBlindedCommitments,
-                        combinedRCommitments);
+                        transferPolynomialCommitments);
                 validCommitments.clear();
                 for (Map.Entry<Integer, Share> entry : allBlindedShares.entrySet()) {
                     int server = entry.getKey();

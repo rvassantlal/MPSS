@@ -20,6 +20,7 @@ public final class Configuration {
 	private boolean useTLSEncryption;
 	private int shareProcessingThreads;
 	private boolean verifyClientRequests;
+	private int nPolynomials;
 
 	private static Configuration INSTANT;
 
@@ -93,6 +94,9 @@ public final class Configuration {
 					case "cobra.verify.requests":
 						verifyClientRequests = Boolean.parseBoolean(value);
 						break;
+					case "cobra.renewal.polynomials":
+						nPolynomials = Integer.parseInt(value);
+						break;
 					default:
 						throw new IllegalArgumentException("Unknown property name");
 				}
@@ -146,5 +150,9 @@ public final class Configuration {
 
 	public boolean useTLSEncryption() {
 		return useTLSEncryption;
+	}
+
+	public int getNPolynomials() {
+		return nPolynomials;
 	}
 }

@@ -4,7 +4,6 @@ import bftsmart.reconfiguration.ServerViewController;
 import bftsmart.reconfiguration.views.View;
 import confidential.Configuration;
 import confidential.Utils;
-import confidential.statemanagement.resharing.BlindedStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,19 +18,19 @@ import java.util.Set;
 
 public class PublicDataReceiver extends Thread {
     private final Logger logger = LoggerFactory.getLogger("confidential");
-    private final BlindedStateHandler blindedStateHandler;
+    private final PublicStateListener publicStateListener;
     private final ServerViewController svController;
     private final int serverPort;
     private final int stateSender;
     private final Set<String> knownServersIp;
     private final boolean isLinearCommitmentScheme;
 
-    public PublicDataReceiver(BlindedStateHandler blindedStateHandler,
+    public PublicDataReceiver(PublicStateListener publicStateListener,
                               ServerViewController svController,
                               int serverPort,
                               int stateSender, int[] receiversId) throws IOException {
         super("Public Data Receiver Thread");
-        this.blindedStateHandler = blindedStateHandler;
+        this.publicStateListener = publicStateListener;
         this.svController = svController;
         this.serverPort = serverPort;
         this.stateSender = stateSender;
@@ -99,7 +98,7 @@ public class PublicDataReceiver extends Thread {
                     end = System.nanoTime();
                     double duration = (end - start) / 1_000_000.0;
                     logger.info("Took {} ms to receive data from {}", duration, pid);
-                    blindedStateHandler.deliverPublicState(pid, serializedBlindedShares,
+                    publicStateListener.deliverPublicState(pid, serializedBlindedShares,
                             commitments, commitmentHash, commonState, commonStateHash);
 
                 } catch (IOException e) {
