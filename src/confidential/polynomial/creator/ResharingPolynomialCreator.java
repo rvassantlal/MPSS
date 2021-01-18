@@ -1,5 +1,6 @@
 package confidential.polynomial.creator;
 
+import confidential.Configuration;
 import confidential.Utils;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.polynomial.*;
@@ -17,12 +18,19 @@ import java.math.BigInteger;
 import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class ResharingPolynomialCreator extends PolynomialCreator {
+    private final Lock vectorEncryptionLock;
 
     ResharingPolynomialCreator(PolynomialCreationContext creationContext, int processId, SecureRandom rndGenerator, ServerConfidentialityScheme confidentialityScheme, InterServersCommunication serversCommunication, PolynomialCreationListener creationListener) {
         super(creationContext, processId, rndGenerator, confidentialityScheme, serversCommunication, creationListener,
                 creationContext.getContexts()[0].getMembers().length, creationContext.getContexts()[0].getF());
+        this.vectorEncryptionLock = new ReentrantLock(true);
     }
 
     @Override
@@ -43,44 +51,46 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
             oldShareholders[i] = confidentialityScheme.getShareholder(oldServers[i]);
         }
 
-        //generating polynomials and their commitments
-        //(Additional witnesses are generated in Kate et al.scheme to valid point (0, 0) in Q and (i, 0) in each R
-        Polynomial[] qs = new Polynomial[nPolynomials];
-        Polynomial[][] rs = new Polynomial[nPolynomials][newN];
-        Commitment[] qCommitments = new Commitment[nPolynomials];
-        Commitment[][] rCommitments = new Commitment[nPolynomials][newN];
-        for (int i = 0; i < nPolynomials; i++) {
-            Polynomial q = new Polynomial(field, oldContext.getF(), BigInteger.ZERO, rndGenerator);
-            qs[i] = q;
-            qCommitments[i] = commitmentScheme.generateCommitments(q, BigInteger.ZERO);
-            for (int j = 0; j < newN; j++) {
-                Polynomial r = generateRecoveryPolynomialFor(newShareholders[j], oldContext.getF());
-                rs[i][j] = r;
-                rCommitments[i][j] = commitmentScheme.generateCommitments(r, newShareholders[j]);
-            }
-        }
+        ExecutorService executorService = Executors
+                .newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
+        CountDownLatch latch = new CountDownLatch(nPolynomials);
 
-        //generating encrypted shares
         Proposal[] proposals = new Proposal[nPolynomials];
-
         for (int i = 0; i < nPolynomials; i++) {
-            Polynomial q = qs[i];
-            Polynomial[] r = rs[i];
-            Map<Integer, byte[]> shares = new HashMap<>(oldN);
-            Commitment[] commitments = new Commitment[newN + 1];
-            commitments[0] = qCommitments[i];
-            System.arraycopy(rCommitments[i], 0, commitments, 1, newN);
+            int finalI = i;
 
-            for (int o = 0; o < oldN; o++) {
-                BigInteger[] vector = new BigInteger[newN];
-                BigInteger shareholder = oldShareholders[o];
-                for (int n = 0; n < newN; n++) {
-                    vector[n] = q.evaluateAt(shareholder).add(r[n].evaluateAt(shareholder)).mod(field);
+            executorService.execute(() -> {
+                //generating polynomials and their commitments
+                //(Additional witnesses are generated in Kate et al.scheme to valid point (0, 0) in Q and (i, 0) in each R
+                Polynomial q = new Polynomial(field, oldContext.getF(), BigInteger.ZERO, rndGenerator);
+                Commitment[] commitments = new Commitment[newN + 1];
+                commitments[0] = commitmentScheme.generateCommitments(q, BigInteger.ZERO);
+                Polynomial[] r = new Polynomial[newN];
+                for (int j = 0; j < newN; j++) {
+                    r[j] = generateRecoveryPolynomialFor(newShareholders[j], oldContext.getF());
+                    commitments[j + 1] = commitmentScheme.generateCommitments(r[j], newShareholders[j]);
                 }
-                shares.put(oldServers[o], encryptVectorFor(oldServers[o], vector));
-            }
-            proposals[i] = new Proposal(shares, commitments);
+
+                //generating encrypted shares
+                Map<Integer, byte[]> shares = new HashMap<>(oldN);
+                for (int o = 0; o < oldN; o++) {
+                    BigInteger[] vector = new BigInteger[newN];
+                    BigInteger shareholder = oldShareholders[o];
+                    for (int n = 0; n < newN; n++) {
+                        vector[n] = q.evaluateAt(shareholder).add(r[n].evaluateAt(shareholder)).mod(field);
+                    }
+                    shares.put(oldServers[o], encryptVectorFor(oldServers[o], vector));
+                }
+                proposals[finalI] = new Proposal(shares, commitments);
+                latch.countDown();
+            });
         }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        executorService.shutdown();
 
         return new ProposalMessage(
                 creationContext.getId(),
@@ -102,10 +112,13 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
             }
             bos.flush();
             byte[] b = bos.toByteArray();
+            vectorEncryptionLock.lock();
             return confidentialityScheme.encryptDataFor(server, b);
         } catch (IOException e) {
             logger.error("Failed to encrypt vector", e);
             return null;
+        } finally {
+            vectorEncryptionLock.unlock();
         }
     }
 
@@ -139,8 +152,8 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
     void validateProposal(ProposalMessage proposalMessage) {
         Proposal[] proposals = proposalMessage.getProposals();
         int newN = creationContext.getContexts()[1].getMembers().length;
-        Share share = new Share(confidentialityScheme.getMyShareholderId(), null);
-        for (int i = 0; i < creationContext.getnPolynomials(); i++) {
+        int nPolynomials = creationContext.getnPolynomials();
+        for (int i = 0; i < nPolynomials; i++) {
             Proposal proposal = proposals[i];
             Map<Integer, BigInteger[]> points = decryptedPoints.get(i);
             if (points == null) {
@@ -154,21 +167,41 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
                 return;
             }
             points.put(proposalMessage.getSender(), decryptedVector);
-            Commitment[] commitments = proposal.getCommitments();
-
-            for (int j = 0; j < newN; j++) {
-                share.setShare(decryptedVector[j]);
-                try {
-                    Commitment commitment = commitmentScheme.sumCommitments(commitments[0], commitments[j + 1]);
-                    if (!commitmentScheme.checkValidityWithoutPreComputation(share, commitment)) {
-                        logger.warn("Proposal from {} is invalid", proposalMessage.getSender());
-                        invalidProposals.add(proposalMessage.getSender());
-                        return;
-                    }
-                } catch (SecretSharingException e) {
-                    logger.error("Failed to sum commitments", e);
-                }
-            }
         }
+        ExecutorService executorService = Executors
+                .newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
+        CountDownLatch latch = new CountDownLatch(nPolynomials);
+
+        for (int i = 0; i < nPolynomials; i++) {
+            Proposal proposal = proposals[i];
+            Map<Integer, BigInteger[]> points = decryptedPoints.get(i);
+            BigInteger[] decryptedVector = points.get(proposalMessage.getSender());
+            Commitment[] commitments = proposal.getCommitments();
+            executorService.submit(() -> {
+                Share share = new Share(shareholderId, null);
+                for (int j = 0; j < newN; j++) {
+                    share.setShare(decryptedVector[j]);
+                    try {
+                        Commitment commitment = commitmentScheme.sumCommitments(commitments[0], commitments[j + 1]);
+                        if (!commitmentScheme.checkValidityWithoutPreComputation(share, commitment)) {
+                            logger.warn("Proposal from {} is invalid", proposalMessage.getSender());
+                            invalidProposals.add(proposalMessage.getSender());
+                            latch.countDown();
+                            return;
+                        }
+                    } catch (SecretSharingException e) {
+                        logger.error("Failed to sum commitments", e);
+                    }
+                }
+                latch.countDown();
+            });
+
+        }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        executorService.shutdown();
     }
 }

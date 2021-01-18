@@ -44,6 +44,8 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
     private long renewalStartTime;
     private final Set<Integer> usedReplicas;
     private boolean isRefreshing;
+    private boolean blindedStateHandlerStarted;
+
 
     public ConfidentialStateManager() {
         lockTimer = new ReentrantLock();
@@ -342,7 +344,15 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
 
             isRefreshing = true;
             int[] oldMembers = context.getContexts()[0].getMembers();
+            int[] newMembers = context.getContexts()[1].getMembers();
             int processId = SVController.getStaticConf().getProcessId();
+            if (!blindedStateHandlerStarted) {
+                logger.info("Old members: {}", Arrays.toString(oldMembers));
+                logger.info("New members: {}", Arrays.toString(newMembers));
+                if (Utils.isIn(processId, newMembers)) {
+                    startBlindedStateHandler(context);
+                }
+            }
 
             if (Utils.isIn(processId, oldMembers)) {
                 sendingBlindedState(context, points, consensusId);
@@ -394,6 +404,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
                 );
             blindedStateHandler.start();
         }
+        blindedStateHandlerStarted = true;
     }
 
     private void sendingBlindedState(PolynomialCreationContext creationContext, PolynomialPoint[] blindingShare, int consensusId) {
@@ -433,6 +444,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
         logger.info("Total renewal time: {}", totalTime);
         dt.resumeDecisionDelivery();
         isRefreshing = false;
+        blindedStateHandlerStarted = false;
         setRefreshTimer();
     }
     @Override

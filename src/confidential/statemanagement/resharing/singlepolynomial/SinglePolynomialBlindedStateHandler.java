@@ -23,7 +23,6 @@ import vss.commitment.Commitment;
 import vss.commitment.CommitmentScheme;
 import vss.facade.SecretSharingException;
 import vss.interpolation.InterpolationStrategy;
-import vss.polynomial.Polynomial;
 import vss.secretsharing.Share;
 import vss.secretsharing.VerifiableShare;
 
@@ -426,81 +425,41 @@ public abstract class SinglePolynomialBlindedStateHandler extends Thread impleme
         try {
             int corruptedServers = this.corruptedServers.get();
             Share[] blindedShares = new Share[oldThreshold + (corruptedServers < oldThreshold ? 2 : 1)];
+            Commitment combinedBlindedCommitments = commitmentScheme.combineCommitments(allBlindedCommitments);
+            Commitment verificationCommitment = commitmentScheme.sumCommitments(combinedBlindedCommitments,
+                    transferPolynomialCommitments);
+
+            Map<BigInteger, Commitment> validCommitments = new HashMap<>(oldThreshold + 1);
+            Set<Integer> invalidServers = new HashSet<>(oldThreshold);
             int j = 0;
             for (Map.Entry<Integer, Share> entry : allBlindedShares.entrySet()) {
                 Share share = entry.getValue();
-                if (j < blindedShares.length) {
-                    blindedShares[j++] = share;
-                }
-            }
-
-            Polynomial polynomial = new Polynomial(field, blindedShares);
-            BigInteger recoveredShare;
-            Map<BigInteger, Commitment> validCommitments;
-
-            if (polynomial.getDegree() != oldThreshold) {
-                blindedShares = new Share[oldThreshold + 1];
-                validCommitments = new HashMap<>(oldThreshold + 1);
-                Commitment combinedBlindedCommitments = commitmentScheme.combineCommitments(allBlindedCommitments);
-                Commitment verificationCommitment = commitmentScheme.sumCommitments(combinedBlindedCommitments,
-                        transferPolynomialCommitments);
-                j = 0;
-                Set<Integer> invalidServers = new HashSet<>(oldThreshold);
-                for (Map.Entry<Integer, Share> entry : allBlindedShares.entrySet()) {
-                    int server = entry.getKey();
-                    BigInteger shareholder = confidentialityScheme.getShareholder(server);
-                    if (commitmentScheme.checkValidityWithoutPreComputation(entry.getValue(), verificationCommitment)) {
-                        blindedShares[j++] = entry.getValue();
-                        if (validCommitments.size() <= oldThreshold) {
-                            validCommitments.put(shareholder, allBlindedCommitments.get(shareholder));
-                        }
-                    } else {
-                        logger.error("Server {} sent me an invalid share", server);
-                        allBlindedCommitments.remove(shareholder);
-                        this.corruptedServers.incrementAndGet();
-                        invalidServers.add(server);
-                        stillValidSenders.remove(server);
-                    }
-                }
-
-                for (Integer server : invalidServers) {
-                    allBlindedShares.remove(server);
-                }
-                recoveredShare = interpolationStrategy.interpolateAt(shareholderId, blindedShares);
-            } else {
-                recoveredShare = polynomial.evaluateAt(shareholderId);
-                int minNumberOfCommitments = corruptedServers >= oldThreshold ? oldThreshold : oldThreshold + 1;
-                validCommitments = new HashMap<>(minNumberOfCommitments);
-                for (Map.Entry<BigInteger, Commitment> blindedCommitments : allBlindedCommitments.entrySet()) {
-                    validCommitments.put(blindedCommitments.getKey(), blindedCommitments.getValue());
-                    if (validCommitments.size() == minNumberOfCommitments)
-                        break;
-                }
-            }
-
-            Commitment commitment;
-            try {
-                commitment = commitmentScheme.recoverCommitment(shareholderId, validCommitments);
-            } catch (SecretSharingException e) { //there is/are invalid witness(es)
-                Commitment combinedBlindedCommitments = commitmentScheme.combineCommitments(allBlindedCommitments);
-                Commitment verificationCommitment = commitmentScheme.sumCommitments(combinedBlindedCommitments,
-                        transferPolynomialCommitments);
-                validCommitments.clear();
-                for (Map.Entry<Integer, Share> entry : allBlindedShares.entrySet()) {
-                    int server = entry.getKey();
-                    BigInteger shareholder = confidentialityScheme.getShareholder(server);
-                    if (commitmentScheme.checkValidityWithoutPreComputation(entry.getValue(), verificationCommitment)) {
+                int server = entry.getKey();
+                BigInteger shareholder = confidentialityScheme.getShareholder(server);
+                if (commitmentScheme.checkValidityWithoutPreComputation(share, verificationCommitment)) {
+                    blindedShares[j] = share;
+                    if (validCommitments.size() <= oldThreshold) {
                         validCommitments.put(shareholder, allBlindedCommitments.get(shareholder));
-                        if (validCommitments.size() == oldThreshold)
-                            break;
-                    } else {
-                        logger.error("Server {} sent me an invalid commitment", server);
-                        this.corruptedServers.incrementAndGet();
-                        stillValidSenders.remove(server);
                     }
+                } else {
+                    logger.error("Server {} sent me an invalid share", server);
+                    allBlindedCommitments.remove(shareholder);
+                    this.corruptedServers.incrementAndGet();
+                    invalidServers.add(server);
+                    stillValidSenders.remove(server);
                 }
-                commitment = commitmentScheme.recoverCommitment(shareholderId, validCommitments);
+                j++;
+                if (j == blindedShares.length) {
+                    break;
+                }
             }
+
+            for (Integer server : invalidServers) {
+                allBlindedShares.remove(server);
+            }
+
+            BigInteger recoveredShare = interpolationStrategy.interpolateAt(shareholderId, blindedShares);
+            Commitment commitment = commitmentScheme.recoverCommitment(shareholderId, validCommitments);
 
             Share share = new Share(shareholderId, recoveredShare);
             return new VerifiableShare(share, commitment, null);

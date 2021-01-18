@@ -231,6 +231,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         boolean terminated = polynomialCreator.processVote(message);
         if (terminated) {
             polynomialCreator.deliverResult(cid);
+            polynomialCreators.remove(message.getId());
         }
     }
 
