@@ -439,6 +439,12 @@ public abstract class PolynomialCreator {
             }
         }
 
+        decryptedPoints.clear();
+        proposals.clear();
+        finalProposalSet.clear();
+        votes.clear();
+        processedVotesMessage = null;
+
         PolynomialPoint[] result = new PolynomialPoint[nPolynomials];
         for (int i = 0; i < nPolynomials; i++) {
             Map<Integer, Share> shares = new HashMap<>(newN);
