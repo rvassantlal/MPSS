@@ -39,13 +39,12 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
     private final AtomicInteger sequenceNumber;
     private final HashMap<Integer, Integer> sequenceNumbers;
     private final Timer refreshTimer;
-    private TimerTask refreshTriggerTask;
     private long recoveryStartTime;
     private long renewalStartTime;
     private final Set<Integer> usedReplicas;
     private boolean isRefreshing;
     private boolean blindedStateHandlerStarted;
-
+    private final LinkedList<PolynomialPoint> polynomialPoints;
 
     public ConfidentialStateManager() {
         lockTimer = new ReentrantLock();
@@ -53,6 +52,7 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
         sequenceNumbers = new HashMap<>();
         refreshTimer = new Timer("Refresh Timer");
         usedReplicas = new HashSet<>();
+        polynomialPoints = new LinkedList<>();
         RENEWAL_PERIOD = Configuration.getInstance().getRenewalPeriod();
         RENEWAL = Configuration.getInstance().isRenewalActive();
         SERVER_STATE_LISTENING_PORT = Configuration.getInstance().getRecoveryPort();
@@ -340,23 +340,44 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
                 && context.getReason() == PolynomialCreationReason.RECOVERY) {
             throw new UnsupportedOperationException("Use resharing");
         } else if (PolynomialCreationReason.RESHARING == context.getReason()) {
-            refreshTriggerTask.cancel();
-
-            isRefreshing = true;
-            int[] oldMembers = context.getContexts()[0].getMembers();
-            int[] newMembers = context.getContexts()[1].getMembers();
-            int processId = SVController.getStaticConf().getProcessId();
-            if (!blindedStateHandlerStarted) {
-                logger.info("Old members: {}", Arrays.toString(oldMembers));
-                logger.info("New members: {}", Arrays.toString(newMembers));
-                if (Utils.isIn(processId, newMembers)) {
-                    startBlindedStateHandler(context);
-                }
+            //refreshTriggerTask.cancel();
+            polynomialPoints.add(points[0]);
+            if (polynomialPoints.size() % 1000 == 0) {
+                logger.info("Created {} polynomials", polynomialPoints.size());
             }
-
-            if (Utils.isIn(processId, oldMembers)) {
-                sendingBlindedState(context, points, consensusId);
+            if (polynomialPoints.size() == Configuration.getInstance().getNPolynomials()) {
+                long end = System.nanoTime();
+                double total = (end - renewalStartTime) / 1_000_000.0;
+                logger.info("{} - Took {} ms to create {} polynomial(s)", PolynomialCreationReason.RESHARING,
+                        total, polynomialPoints.size());
+                startResharing(context, consensusId);
+            } else {
+                startPolynomialGeneration();
             }
+        }
+    }
+
+    private void startResharing(PolynomialCreationContext context, int consensusId) {
+        isRefreshing = true;
+        int[] oldMembers = context.getContexts()[0].getMembers();
+        int[] newMembers = context.getContexts()[1].getMembers();
+        int processId = SVController.getStaticConf().getProcessId();
+        if (!blindedStateHandlerStarted) {
+            logger.info("Old members: {}", Arrays.toString(oldMembers));
+            logger.info("New members: {}", Arrays.toString(newMembers));
+            if (Utils.isIn(processId, newMembers)) {
+                startBlindedStateHandler(context);
+            }
+        }
+
+        PolynomialPoint[] points = new PolynomialPoint[polynomialPoints.size()];
+        int j = 0;
+        for (PolynomialPoint polynomialPoint : polynomialPoints) {
+            points[j++] = polynomialPoint;
+        }
+        polynomialPoints.clear();
+        if (Utils.isIn(processId, oldMembers)) {
+            sendingBlindedState(context, points, consensusId);
         }
     }
 
@@ -453,42 +474,47 @@ public class ConfidentialStateManager extends StateManager implements Polynomial
         System.exit(-1);
     }
 
+    private PolynomialCreationContext startPolynomialGeneration() {
+        int id = sequenceNumber.getAndIncrement();
+        PolynomialContext oldView = new PolynomialContext(
+                SVController.getCurrentViewF(),
+                BigInteger.ZERO,
+                null,
+                SVController.getCurrentViewAcceptors()
+        );
+        PolynomialContext newView = new PolynomialContext(
+                SVController.getCurrentViewF(),
+                BigInteger.ZERO,
+                null,
+                SVController.getCurrentViewAcceptors()
+        );
+        PolynomialCreationContext context = new PolynomialCreationContext(
+                id,
+                tomLayer.execManager.getCurrentLeader(),
+                PolynomialCreationReason.RESHARING,
+                oldView,
+                newView
+        );
+
+        distributedPolynomial.createNewPolynomial(context);
+        return context;
+    }
+
     private void setRefreshTimer() {
-        refreshTriggerTask = new TimerTask() {
+        TimerTask refreshTriggerTask = new TimerTask() {
             @Override
             public void run() {
                 renewalStartTime = System.nanoTime();
-                int id = sequenceNumber.getAndIncrement();
                 int nPolynomials = Configuration.getInstance().getNPolynomials();
-                PolynomialContext oldView = new PolynomialContext(
-                        SVController.getCurrentViewF(),
-                        BigInteger.ZERO,
-                        null,
-                        SVController.getCurrentViewAcceptors()
-                );
-                PolynomialContext newView = new PolynomialContext(
-                        SVController.getCurrentViewF(),
-                        BigInteger.ZERO,
-                        null,
-                        SVController.getCurrentViewAcceptors()
-                );
-                PolynomialCreationContext context = new PolynomialCreationContext(
-                        id,
-                        tomLayer.execManager.getCurrentLeader(),
-                        nPolynomials, PolynomialCreationReason.RESHARING,
-                        oldView,
-                        newView
-                );
-                int[] oldMembers = context.getContexts()[0].getMembers();
-                int[] newMembers = context.getContexts()[1].getMembers();
-                logger.info("Old members: {}", Arrays.toString(oldMembers));
-                logger.info("New members: {}", Arrays.toString(newMembers));
+                logger.info("Creating {} polynomials for resharing", nPolynomials);
+                PolynomialCreationContext context = startPolynomialGeneration();
+                logger.debug("Starting creation of new polynomial with id {} for resharing", context.getId());
+                int[] newMembers = SVController.getCurrentViewAcceptors();
                 int processId = SVController.getStaticConf().getProcessId();
                 if (Utils.isIn(processId, newMembers)) {
                     startBlindedStateHandler(context);
                 }
-                logger.debug("Starting creation of new polynomial with id {} for resharing", id);
-                distributedPolynomial.createNewPolynomial(context);
+
             }
         };
 

@@ -192,7 +192,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         logger.debug("Received proposal from {} for polynomial creation id {}", message.getSender(), message.getId());
         PolynomialCreator polynomialCreator = polynomialCreators.get(message.getId());
         if (polynomialCreator == null) {
-            logger.error("There is no active polynomial creation with id {}", message.getId());
+            logger.debug("There is no active polynomial creation with id {}", message.getId());
             return;
         }
         polynomialCreator.processProposal(message);
@@ -202,7 +202,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         logger.debug("Received proposal set from {} for polynomial creation id {}", message.getSender(), message.getId());
         PolynomialCreator polynomialCreator = polynomialCreators.get(message.getId());
         if (polynomialCreator == null) {
-            logger.error("There is no active polynomial creation with id {}", message.getId());
+            logger.debug("There is no active polynomial creation with id {}", message.getId());
             return;
         }
         polynomialCreator.processProposalSet(message);
@@ -212,7 +212,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         logger.debug("Received vote from {} for polynomial creation id {}", message.getSender(), message.getId());
         PolynomialCreator polynomialCreator = polynomialCreators.get(message.getId());
         if (polynomialCreator == null) {
-            logger.error("There is no active polynomial creation with id {}", message.getId());
+            logger.debug("There is no active polynomial creation with id {}", message.getId());
             return;
         }
         boolean terminated = polynomialCreator.processVote(message);
@@ -225,7 +225,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         logger.debug("Received votes from {} for polynomial creation id {}", message.getSender(), message.getId());
         PolynomialCreator polynomialCreator = polynomialCreators.get(message.getId());
         if (polynomialCreator == null) {
-            logger.error("There is no active polynomial creation with id {}", message.getId());
+            logger.debug("There is no active polynomial creation with id {}", message.getId());
             return;
         }
         boolean terminated = polynomialCreator.processVote(message);
@@ -239,7 +239,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         logger.debug("Received request to send missing proposal from {} with id {}", message.getSender(), message.getId());
         PolynomialCreator polynomialCreator = polynomialCreators.get(message.getId());
         if (polynomialCreator == null) {
-            logger.error("There is no active polynomial creation with id {}", message.getId());
+            logger.debug("There is no active polynomial creation with id {}", message.getId());
             return;
         }
 
@@ -251,7 +251,7 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
                 message.getId());
         PolynomialCreator polynomialCreator = polynomialCreators.get(message.getId());
         if (polynomialCreator == null) {
-            logger.error("There is no active polynomial creation with id {}", message.getId());
+            logger.debug("There is no active polynomial creation with id {}", message.getId());
             return;
         }
         polynomialCreator.processMissingProposals(message);

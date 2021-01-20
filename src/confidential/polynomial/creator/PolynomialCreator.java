@@ -1,11 +1,13 @@
 package confidential.polynomial.creator;
 
 import bftsmart.tom.util.TOMUtil;
+import confidential.Configuration;
 import confidential.Metadata;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.interServersCommunication.InterServersMessageType;
 import confidential.polynomial.*;
 import confidential.server.ServerConfidentialityScheme;
+import io.netty.util.internal.ConcurrentSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import vss.commitment.Commitment;
@@ -22,6 +24,10 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public abstract class PolynomialCreator {
     protected Logger logger = LoggerFactory.getLogger("confidential");
@@ -36,7 +42,7 @@ public abstract class PolynomialCreator {
     protected final BigInteger shareholderId;
     private ProposalMessage myProposal;
     private final Map<Integer, ProposalMessage> proposals;
-    protected final Map<Integer, Map<Integer, BigInteger[]>> decryptedPoints;
+    protected final Map<Integer, BigInteger[]> decryptedPoints;
     protected final Map<Integer, ProposalMessage> finalProposalSet;
     private Map<Integer, byte[]> missingProposals;
     private boolean proposalSetProposed;
@@ -77,9 +83,9 @@ public abstract class PolynomialCreator {
 
         this.proposals = new HashMap<>(maxMessages);
         this.finalProposalSet = new HashMap<>(maxMessages);
-        this.decryptedPoints = new HashMap<>(creationContext.getnPolynomials());
+        this.decryptedPoints = new HashMap<>(maxMessages);
         this.validProposals = new HashSet<>(maxMessages);
-        this.invalidProposals = new HashSet<>(maxMessages);
+        this.invalidProposals = ConcurrentHashMap.newKeySet(maxMessages);
         this.newPolynomialRequestsFrom = new HashSet<>(maxMessages);
         this.votes = new ArrayList<>(maxMessages);
         this.acceptList = new HashSet<>(maxMessages);
@@ -132,8 +138,7 @@ public abstract class PolynomialCreator {
     }
 
     private void generateAndSendProposal() {
-        logger.info("Creating new {} polynomial(s) with id {}", creationContext.getnPolynomials(),
-                creationContext.getId());
+        logger.debug("Creating new polynomial with id {}", creationContext.getId());
         startTime = System.nanoTime();
         myProposal = computeProposalMessage();
 
@@ -182,21 +187,21 @@ public abstract class PolynomialCreator {
              ObjectOutputStream out = new ObjectOutputStream(bos)) {
             out.writeInt(message.getSender());
             out.writeInt(message.getId());
-            for (Proposal proposal : message.getProposals()) {
-                int[] members = new int[proposal.getPoints().size()];
-                int i = 0;
-                Map<Integer, byte[]> points = proposal.getPoints();
-                for (int member : points.keySet()) {
-                    members[i++] = member;
-                }
-                Arrays.sort(members);
-                for (int member : members) {
-                    out.write(member);
-                    out.write(points.get(member));
-                }
-                for (Commitment commitment : proposal.getCommitments()) {
-                    commitment.writeExternal(out);
-                }
+
+            Proposal proposal = message.getProposal();
+            int[] members = new int[proposal.getPoints().size()];
+            int i = 0;
+            Map<Integer, byte[]> points = proposal.getPoints();
+            for (int member : points.keySet()) {
+                members[i++] = member;
+            }
+            Arrays.sort(members);
+            for (int member : members) {
+                out.write(member);
+                out.write(points.get(member));
+            }
+            for (Commitment commitment : proposal.getCommitments()) {
+                commitment.writeExternal(out);
             }
             out.flush();
             bos.flush();
@@ -237,21 +242,8 @@ public abstract class PolynomialCreator {
         proposalSetProposed = true;
     }
 
-    boolean isValidShare(Commitment commitment, Share... shares) {
-        boolean isValid = true;
-        commitmentScheme.startVerification(commitment);
-        for (Share share : shares) {
-            if (!commitmentScheme.checkValidity(share, commitment)) {
-                isValid = false;
-                break;
-            }
-        }
-        commitmentScheme.endVerification();
-        return isValid;
-    }
-
     public void processProposalSet(ProposalSetMessage message) {
-        logger.info("Proposal set contains proposals from {}",
+        logger.debug("Proposal set contains proposals from {}",
                 Arrays.toString(message.getReceivedNodes()));
         int[] receivedNodes = message.getReceivedNodes();
         byte[][] receivedProposals = message.getReceivedProposals();
@@ -403,41 +395,47 @@ public abstract class PolynomialCreator {
     }
 
     public void deliverResult(int consensusId) {
-        int nPolynomials = creationContext.getnPolynomials();
         int[] newServers = creationContext.getContexts()[1].getMembers();
         int newN = newServers.length;
-        BigInteger[][] finalPoint = new BigInteger[nPolynomials][];
-        Commitment[][] allCommitments = new Commitment[nPolynomials][newN + 1];
+        BigInteger[] finalPoint = new BigInteger[newN];
+        Commitment[] allCommitments = new Commitment[newN + 1];
 
-        for (int i = 0; i < nPolynomials; i++) {
-            Map<Integer, BigInteger[]> parcelPoints = decryptedPoints.get(i);
-            BigInteger[] points = new BigInteger[newN];
-            Arrays.fill(points, BigInteger.ZERO);
-            Commitment[][] commitments = new Commitment[newN + 1][parcelPoints.size()];
+        Arrays.fill(finalPoint, BigInteger.ZERO);
+        Commitment[][] commitments = new Commitment[newN + 1][decryptedPoints.size()];
 
-            int k = 0;
-            for (Map.Entry<Integer, BigInteger[]> entry : parcelPoints.entrySet()) {
-                BigInteger[] p = entry.getValue();
-                ProposalMessage proposalMessage = proposals.get(entry.getKey());
-                Proposal proposal = proposalMessage.getProposals()[i];
+        int k = 0;
+        for (Map.Entry<Integer, BigInteger[]> entry : decryptedPoints.entrySet()) {
+            BigInteger[] p = entry.getValue();
+            ProposalMessage proposalMessage = proposals.get(entry.getKey());
+            Proposal proposal = proposalMessage.getProposal();
 
-                commitments[0][k] = proposal.getCommitments()[0];
-                for (int j = 0; j < newN; j++) {
-                    points[j] = points[j].add(p[j]).mod(field);
-                    commitments[j + 1][k] = proposal.getCommitments()[j + 1];
-                }
-                k++;
+            commitments[0][k] = proposal.getCommitments()[0];
+            for (int j = 0; j < newN; j++) {
+                finalPoint[j] = finalPoint[j].add(p[j]).mod(field);
+                commitments[j + 1][k] = proposal.getCommitments()[j + 1];
             }
+            k++;
+        }
 
-            finalPoint[i] = points;
-            for (int j = 0; j <= newN; j++) {
+        ExecutorService executorService = Executors.newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
+        CountDownLatch latch = new CountDownLatch(newN + 1);
+        for (int j = 0; j <= newN; j++) {
+            int finalJ = j;
+            executorService.submit(() -> {
                 try {
-                    allCommitments[i][j] = commitmentScheme.sumCommitments(commitments[j]);
+                    allCommitments[finalJ] = commitmentScheme.sumCommitments(commitments[finalJ]);
                 } catch (SecretSharingException e) {
                     logger.error("Failed to sum valid commitments", e);
                 }
-            }
+                latch.countDown();
+            });
         }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        executorService.shutdown();
 
         decryptedPoints.clear();
         proposals.clear();
@@ -445,29 +443,19 @@ public abstract class PolynomialCreator {
         votes.clear();
         processedVotesMessage = null;
 
-        PolynomialPoint[] result = new PolynomialPoint[nPolynomials];
-        for (int i = 0; i < nPolynomials; i++) {
-            Map<Integer, Share> shares = new HashMap<>(newN);
-            Map<Integer, Commitment> c = new HashMap<>(newN);
-            Commitment[] allCommitment = allCommitments[i];
-            c.put(-1, allCommitment[0]);
-            for (int j = 0; j < newN; j++) {
-                shares.put(newServers[j], new Share(shareholderId, finalPoint[i][j]));
-                c.put(newServers[j], allCommitment[j + 1]);
-            }
-            result[i] = new PolynomialPoint(shares, c);
+        Map<Integer, Share> shares = new HashMap<>(newN);
+        Map<Integer, Commitment> c = new HashMap<>(newN);
+        c.put(-1, allCommitments[0]);
+        for (int j = 0; j < newN; j++) {
+            shares.put(newServers[j], new Share(shareholderId, finalPoint[j]));
+            c.put(newServers[j], allCommitments[j + 1]);
         }
+        PolynomialPoint result = new PolynomialPoint(shares, c);
         long endTime = System.nanoTime();
         double totalTime = (endTime - startTime) / 1_000_000.0;
-        logger.info("{}:{} - Took {} ms to create {} polynomials", creationContext.getReason(),
-                creationContext.getId(), totalTime, nPolynomials);
+        logger.debug("{}:{} - Took {} ms to create the polynomial", creationContext.getReason(),
+                creationContext.getId(), totalTime);
         creationListener.onPolynomialCreationSuccess(creationContext, consensusId, result);
-    }
-
-    public void startViewChange() {
-        logger.debug("TODO:The leader {} is faulty. Changing view", creationContext.getLeader());
-        throw new UnsupportedOperationException("TODO: Implement view change in " +
-                "polynomial creation");
     }
 
     private byte[] serialize(PolynomialMessage message) {
