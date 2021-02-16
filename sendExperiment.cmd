@@ -1,5 +1,5 @@
-set TEMP_DIR=C:\Users\Home\Desktop
-set SRC=C:\Users\Home\\Documents\IntelliJ\MPSS
+set TEMP_DIR=C:\Users\robin\Desktop
+set SRC=F:\IntelliJ\MPSS
 set FOLDER_NAME=mpssQ
 set QUINTA_USER=rvassantlal
 

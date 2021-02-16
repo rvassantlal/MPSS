@@ -4,7 +4,7 @@ import java.util.List;
 
 public interface PolynomialCreationListener {
     void onPolynomialCreationSuccess(PolynomialCreationContext context, int consensusId,
-                                     PolynomialPoint... points);
+                                     PolynomialPoint point);
     void onPolynomialCreationFailure(PolynomialCreationContext context,
                                      List<ProposalMessage> invalidProposals,
                                      int consensusId);

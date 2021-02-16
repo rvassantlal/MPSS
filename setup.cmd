@@ -1,5 +1,5 @@
-set SRC=C:\Users\Home\\Documents\IntelliJ\MPSS
-set DST=C:\Users\Home\Desktop\mpss
+set SRC=F:\IntelliJ\MPSS
+set DST=C:\Users\robin\Desktop\mpss
 set REP=0 1 2 3
 set CLI=0
 

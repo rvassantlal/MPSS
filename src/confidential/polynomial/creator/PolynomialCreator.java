@@ -1,13 +1,12 @@
 package confidential.polynomial.creator;
 
 import bftsmart.tom.util.TOMUtil;
-import confidential.Configuration;
 import confidential.Metadata;
+import confidential.interServersCommunication.CommunicationTag;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.interServersCommunication.InterServersMessageType;
 import confidential.polynomial.*;
 import confidential.server.ServerConfidentialityScheme;
-import io.netty.util.internal.ConcurrentSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import vss.commitment.Commitment;
@@ -26,8 +25,6 @@ import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public abstract class PolynomialCreator {
     protected Logger logger = LoggerFactory.getLogger("confidential");
@@ -50,6 +47,7 @@ public abstract class PolynomialCreator {
     protected final Set<Integer> invalidProposals;
     protected final ServerConfidentialityScheme confidentialityScheme;
     private final PolynomialCreationListener creationListener;
+    protected final DistributedPolynomial distributedPolynomial;
     private final Set<Integer> newPolynomialRequestsFrom;
     private boolean iHaveSentNewPolyRequest;
     private long startTime;
@@ -65,7 +63,7 @@ public abstract class PolynomialCreator {
                       InterServersCommunication serversCommunication,
                       PolynomialCreationListener creationListener,
                       int n,
-                      int f) {
+                      int f, DistributedPolynomial distributedPolynomial) {
         this.creationContext = creationContext;
         this.processId = processId;
         this.shareholderId = confidentialityScheme.getMyShareholderId();
@@ -75,6 +73,7 @@ public abstract class PolynomialCreator {
         this.commitmentScheme = confidentialityScheme.getCommitmentScheme();
         this.serversCommunication = serversCommunication;
         this.creationListener = creationListener;
+        this.distributedPolynomial = distributedPolynomial;
 
         this.quorumThreshold = n - f;
         this.faultsThreshold = f;
@@ -96,6 +95,41 @@ public abstract class PolynomialCreator {
         return creationContext;
     }
 
+    public void messageReceived(InterServersMessageType type, PolynomialMessage message, int cid) {
+        switch (type) {
+            case NEW_POLYNOMIAL:
+                processNewPolynomialMessage((NewPolynomialMessage) message);
+                break;
+            case POLYNOMIAL_PROPOSAL:
+                processProposal((ProposalMessage) message);
+                break;
+            case POLYNOMIAL_PROPOSAL_SET:
+                processProposalSet((ProposalSetMessage) message);
+                break;
+            case POLYNOMIAL_PROCESSED_VOTES:
+                boolean terminated = processVote((ProcessedVotesMessage) message);
+                if (terminated) {
+                    deliverResult(cid);
+                    distributedPolynomial.removePolynomialCreator(creationContext.getId());
+                }
+                break;
+            case POLYNOMIAL_VOTE:
+                boolean b = processVote((VoteMessage) message);
+                if (b) {
+                    sendProcessedVotes();
+                }
+                break;
+            case POLYNOMIAL_REQUEST_MISSING_PROPOSALS:
+                generateMissingProposalsResponse((MissingProposalRequestMessage) message);
+                break;
+            case POLYNOMIAL_MISSING_PROPOSALS:
+                processMissingProposals((MissingProposalsMessage) message);
+                break;
+            default:
+                logger.warn("Unknown polynomial message type {}", type);
+        }
+    }
+
     public void sendNewPolynomialCreationRequest() {
         if (iHaveSentNewPolyRequest)
             return;
@@ -104,8 +138,8 @@ public abstract class PolynomialCreator {
         int[] members = creationContext.getContexts()[0].getMembers();
         logger.debug("Sending NewPolynomialMessage to {} with id {}", Arrays.toString(members),
                 creationContext.getId());
-        serversCommunication.sendUnordered(InterServersMessageType.NEW_POLYNOMIAL, serialize(newPolynomialMessage),
-                members);
+        serversCommunication.sendUnordered(CommunicationTag.POLYNOMIAL, InterServersMessageType.NEW_POLYNOMIAL,
+                serialize(newPolynomialMessage), members);
         iHaveSentNewPolyRequest = true;
     }
 
@@ -150,7 +184,7 @@ public abstract class PolynomialCreator {
         int[] members = creationContext.getContexts()[0].getMembers();
         logger.debug("Sending ProposalMessage to {} with id {}", Arrays.toString(members),
                 creationContext.getId());
-        serversCommunication.sendUnordered(InterServersMessageType.POLYNOMIAL_PROPOSAL,
+        serversCommunication.sendUnordered(CommunicationTag.POLYNOMIAL, InterServersMessageType.POLYNOMIAL_PROPOSAL,
                 serialize(myProposal), members);
     }
 
@@ -236,7 +270,7 @@ public abstract class PolynomialCreator {
         int[] members = creationContext.getContexts()[0].getMembers();
         logger.debug("I'm leader and I'm proposing a proposal set with proposals from: {}",
                 Arrays.toString(receivedNodes));
-        serversCommunication.sendUnordered(InterServersMessageType.POLYNOMIAL_PROPOSAL_SET,
+        serversCommunication.sendUnordered(CommunicationTag.POLYNOMIAL, InterServersMessageType.POLYNOMIAL_PROPOSAL_SET,
                 serialize(proposalSetMessage), members);
 
         proposalSetProposed = true;
@@ -287,7 +321,7 @@ public abstract class PolynomialCreator {
                 invalidProposalArray
         );
         logger.debug("Sending votes to {} with id {}", creationContext.getLeader(), creationContext.getId());
-        serversCommunication.sendUnordered(InterServersMessageType.POLYNOMIAL_VOTE, serialize(voteMessage),
+        serversCommunication.sendUnordered(CommunicationTag.POLYNOMIAL, InterServersMessageType.POLYNOMIAL_VOTE, serialize(voteMessage),
                 creationContext.getLeader());
     }
 
@@ -299,7 +333,8 @@ public abstract class PolynomialCreator {
                     e.getValue()
             );
             logger.debug("Asking missing proposal to {} with id {}", e.getKey(), creationContext.getId());
-            serversCommunication.sendUnordered(InterServersMessageType.POLYNOMIAL_REQUEST_MISSING_PROPOSALS,
+            serversCommunication.sendUnordered(CommunicationTag.POLYNOMIAL,
+                    InterServersMessageType.POLYNOMIAL_REQUEST_MISSING_PROPOSALS,
                     serialize(missingProposalRequestMessage), e.getKey());
         }
     }
@@ -311,7 +346,8 @@ public abstract class PolynomialCreator {
                 myProposal
         );
         logger.debug("Sending missing proposals to {} with id {}", message.getSender(), creationContext.getId());
-        serversCommunication.sendUnordered(InterServersMessageType.POLYNOMIAL_MISSING_PROPOSALS,
+        serversCommunication.sendUnordered(CommunicationTag.POLYNOMIAL,
+                InterServersMessageType.POLYNOMIAL_MISSING_PROPOSALS,
                 serialize(missingProposalsMessage), message.getSender());
     }
 
@@ -417,11 +453,10 @@ public abstract class PolynomialCreator {
             k++;
         }
 
-        ExecutorService executorService = Executors.newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
         CountDownLatch latch = new CountDownLatch(newN + 1);
         for (int j = 0; j <= newN; j++) {
             int finalJ = j;
-            executorService.submit(() -> {
+            distributedPolynomial.submitJob(() -> {
                 try {
                     allCommitments[finalJ] = commitmentScheme.sumCommitments(commitments[finalJ]);
                 } catch (SecretSharingException e) {
@@ -435,7 +470,6 @@ public abstract class PolynomialCreator {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        executorService.shutdown();
 
         decryptedPoints.clear();
         proposals.clear();

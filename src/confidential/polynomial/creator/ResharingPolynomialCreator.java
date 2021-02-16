@@ -1,6 +1,5 @@
 package confidential.polynomial.creator;
 
-import confidential.Configuration;
 import confidential.Utils;
 import confidential.interServersCommunication.InterServersCommunication;
 import confidential.polynomial.*;
@@ -19,17 +18,19 @@ import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class ResharingPolynomialCreator extends PolynomialCreator {
     private final Lock vectorEncryptionLock;
 
-    ResharingPolynomialCreator(PolynomialCreationContext creationContext, int processId, SecureRandom rndGenerator, ServerConfidentialityScheme confidentialityScheme, InterServersCommunication serversCommunication, PolynomialCreationListener creationListener) {
+    ResharingPolynomialCreator(PolynomialCreationContext creationContext, int processId, SecureRandom rndGenerator,
+                               ServerConfidentialityScheme confidentialityScheme,
+                               InterServersCommunication serversCommunication,
+                               PolynomialCreationListener creationListener, DistributedPolynomial distributedPolynomial) {
         super(creationContext, processId, rndGenerator, confidentialityScheme, serversCommunication, creationListener,
-                creationContext.getContexts()[0].getMembers().length, creationContext.getContexts()[0].getF());
+                creationContext.getContexts()[0].getMembers().length, creationContext.getContexts()[0].getF(),
+                distributedPolynomial);
         this.vectorEncryptionLock = new ReentrantLock(true);
     }
 
@@ -50,8 +51,6 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
             oldShareholders[i] = confidentialityScheme.getShareholder(oldServers[i]);
         }
 
-        ExecutorService executorService = Executors
-                .newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
         CountDownLatch latch = new CountDownLatch(newN + 1);
 
         Polynomial[] polynomials = new Polynomial[newN + 1];
@@ -68,7 +67,7 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
             }
             polynomials[i] = polynomial;
             int finalI = i;
-            executorService.execute(() -> {
+            distributedPolynomial.submitJob(() -> {
                 commitments[finalI] = commitmentScheme.generateCommitments(polynomial, shareholder);
                 latch.countDown();
             });
@@ -78,7 +77,6 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        executorService.shutdown();
 
         //generating encrypted shares
         Map<Integer, byte[]> shares = new HashMap<>(oldN);
@@ -162,8 +160,6 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
         }
         decryptedPoints.put(proposalMessage.getSender(), decryptedVector);
 
-        ExecutorService executorService = Executors
-                .newFixedThreadPool(Configuration.getInstance().getShareProcessingThreads());
         CountDownLatch latch = new CountDownLatch(newN);
         Commitment[] commitments = proposal.getCommitments();
 
@@ -171,7 +167,7 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
         for (int i = 0; i < newN; i++) {
             Commitment rCommitment = commitments[i + 1];
             Share share = new Share(shareholderId, decryptedVector[i]);
-            executorService.submit(() -> {
+            distributedPolynomial.submitJob(() -> {
                     try {
                         Commitment commitment = commitmentScheme.sumCommitments(qCommitment, rCommitment);
                         if (!commitmentScheme.checkValidityWithoutPreComputation(share, commitment)) {
@@ -192,6 +188,5 @@ public class ResharingPolynomialCreator extends PolynomialCreator {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        executorService.shutdown();
     }
 }

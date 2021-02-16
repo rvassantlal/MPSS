@@ -1,17 +1,16 @@
-package confidential.statemanagement;
+package confidential.statemanagement.privatestate.sender;
 
+import vss.commitment.Commitment;
 import vss.secretsharing.Share;
 
 import java.util.LinkedList;
 
-public class BlindedApplicationState {
+public class SeparatedState {
     private final byte[] commonState;
-    private final byte[] commitments;
     private final LinkedList<Share> shares;
+    private final LinkedList<Commitment> commitments;
 
-
-    public BlindedApplicationState(byte[] commonState, LinkedList<Share> shares,
-                                   byte[] commitments) {
+    public SeparatedState(byte[] commonState, LinkedList<Share> shares, LinkedList<Commitment> commitments) {
         this.commonState = commonState;
         this.shares = shares;
         this.commitments = commitments;
@@ -25,7 +24,7 @@ public class BlindedApplicationState {
         return shares;
     }
 
-    public byte[] getCommitments() {
+    public LinkedList<Commitment> getCommitments() {
         return commitments;
     }
 }

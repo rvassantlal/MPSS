@@ -14,6 +14,10 @@ public class PolynomialPoint {
         this.commitments = commitments;
     }
 
+    public Map<Integer, Share> getShares() {
+        return shares;
+    }
+
     public Commitment getCommitments(int label) {
         return commitments.get(label);
     }
