@@ -11,10 +11,10 @@ import java.util.concurrent.LinkedBlockingQueue;
 public class SenderThread extends Thread {
     private final Logger logger = LoggerFactory.getLogger("communication");
     private final int remoteId;
-    private final LinkedBlockingQueue<byte[]> outQueue;
+    private final LinkedBlockingQueue<InternalMessage> outQueue;
     private final Connection connection;
 
-    public SenderThread(int remoteId, LinkedBlockingQueue<byte[]> outQueue, Connection connection) {
+    public SenderThread(int remoteId, LinkedBlockingQueue<InternalMessage> outQueue, Connection connection) {
         super("Sender Thread for " + remoteId);
         this.remoteId = remoteId;
         this.outQueue = outQueue;
@@ -23,7 +23,7 @@ public class SenderThread extends Thread {
 
     @Override
     public void run() {
-        byte[] data;
+        InternalMessage data;
         while (connection.isDoingWork()) {
             try {
                 data = outQueue.take();

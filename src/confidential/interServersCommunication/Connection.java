@@ -6,10 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.*;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.FileInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.SocketException;
 import java.security.*;
 import java.security.cert.CertificateException;
@@ -24,13 +21,13 @@ public class Connection {
     private final Logger logger = LoggerFactory.getLogger("communication");
     private static final long POOL_TIME = 5000;
     private final boolean useSenderThread;
-    private final LinkedBlockingQueue<byte[]> outQueue;
+    private final LinkedBlockingQueue<InternalMessage> outQueue;
     private final ServerViewController svController;
     private final int remoteId;
     private Lock sendLock;
     private SSLSocket socket;
-    private DataOutputStream socketOutStream;
-    private DataInputStream socketInStream;
+    private ObjectOutput socketOutStream;
+    private ObjectInput socketInStream;
     private boolean doWork;
     private final Lock connectLock;
     private final ReceiverThread receiverThread;
@@ -54,8 +51,8 @@ public class Connection {
         }
         if (this.socket != null) {
             try {
-                socketOutStream = new DataOutputStream(this.socket.getOutputStream());
-                socketInStream = new DataInputStream(this.socket.getInputStream());
+                socketOutStream = new ObjectOutputStream(this.socket.getOutputStream());
+                socketInStream = new ObjectInputStream(this.socket.getInputStream());
             } catch (IOException e) {
                 throw new IllegalStateException("Error while creating connection to " + remoteId, e);
             }
@@ -73,20 +70,20 @@ public class Connection {
         receiverThread.start();
     }
 
-    public void send(byte[] data) {
+    public void send(InternalMessage message) {
         if (useSenderThread) {
             logger.debug("Queue message for {}", remoteId);
-            if (!outQueue.offer(data)) {
+            if (!outQueue.offer(message)) {
                 logger.debug("Out queue for {} is full (message discarded)", remoteId);
             }
         } else {
             sendLock.lock();
-            sendBytes(data);
+            sendBytes(message);
             sendLock.unlock();
         }
     }
 
-    public void sendBytes(byte[] messageData) {
+    public void sendBytes(InternalMessage message) {
         boolean abort = false;
         do {
             if (abort) {
@@ -95,17 +92,8 @@ public class Connection {
             if (socket != null && socketOutStream != null) {
                 try {
                     logger.debug("Sending data to {}", remoteId);
-                    // do an extra copy of the data to be sent, but on a single out stream write
-                    byte[] data = new byte[5 + messageData.length];// without MAC
-                    int value = messageData.length;
-
-                    System.arraycopy(new byte[] { (byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8),
-                            (byte) value }, 0, data, 0, 4);
-                    System.arraycopy(messageData, 0, data, 4, messageData.length);
-                    System.arraycopy(new byte[] { (byte) 0 }, 0, data, 4 + messageData.length, 1);
-
-                    socketOutStream.write(data);
-
+                    message.writeExternal(socketOutStream);
+                    socketOutStream.flush();
                     return;
                 } catch (IOException ex) {
                     closeSocket();
@@ -179,8 +167,8 @@ public class Connection {
 
             if (socket != null) {
                 try {
-                    socketOutStream = new DataOutputStream(socket.getOutputStream());
-                    socketInStream = new DataInputStream(socket.getInputStream());
+                    socketOutStream = new ObjectOutputStream(socket.getOutputStream());
+                    socketInStream = new ObjectInputStream(socket.getInputStream());
                     receiverThread.updateConnection(socket, socketInStream);
                 } catch (IOException ex) {
                     logger.error("Failed to authenticate to replica", ex);

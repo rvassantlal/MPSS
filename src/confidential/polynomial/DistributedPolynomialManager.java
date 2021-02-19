@@ -44,7 +44,7 @@ public class DistributedPolynomialManager implements PolynomialCreationListener 
         int internalId = internalSequenceNumber;
         logger.info("Starting creation of {} polynomial(s) with id {} for resharing", nPolynomials,
                 internalId);
-        for (int i = 0; i < nPolynomials; i++) {
+        for (int i = 0; i < nPolynomials / 2; i++) {
             int id = internalSequenceNumber++;
             int leader = oldMembers[id % oldMembers.length];
             PolynomialCreationContext creationContext = new PolynomialCreationContext(
@@ -79,16 +79,18 @@ public class DistributedPolynomialManager implements PolynomialCreationListener 
         lock.unlock();
     }
 
+    private int counter;
+
     @Override
     public void onPolynomialCreationSuccess(PolynomialCreationContext context, int consensusId,
                                             PolynomialPoint point) {
         lock.lock();
-        logger.debug("Created new {} polynomial(s) with id {}", point.getShares().size(), context.getId());
-
+        counter++;
+        logger.debug("Created new {} polynomial(s) with id {} ({})", point.getShares().size(), context.getId(), counter);
         if (context.getReason() == PolynomialCreationReason.RESHARING) {
             ResharingPolynomialContext polynomialContext = resharingPolynomialContexts.get(context.getInternalId());
             if (polynomialContext == null) {
-                logger.debug("There is no resharing polynomial context. Creating one");
+                logger.info("There is no resharing polynomial context. Creating one");
                 PolynomialContext oldContext = context.getContexts()[0];
                 PolynomialContext newContext = context.getContexts()[1];
                 polynomialContext = new ResharingPolynomialContext(
@@ -103,17 +105,61 @@ public class DistributedPolynomialManager implements PolynomialCreationListener 
             }
             polynomialContext.addPolynomial(context.getId(), point);
             polynomialContext.setCID(consensusId);
-            if (polynomialContext.currentIndex % 5000 == 0 && polynomialContext.currentIndex != polynomialContext.getNPolynomials())
+
+            if (polynomialContext.currentIndex % 10000 == 0 && polynomialContext.currentIndex != polynomialContext.getNPolynomials()) {
                 logger.info("{} polynomial(s) created", polynomialContext.currentIndex);
+                System.gc();
+            }
 
             if (polynomialContext.currentIndex == polynomialContext.getNPolynomials()) {
                 polynomialContext.endTime();
                 double delta = polynomialContext.getTime() / 1_000_000.0;
                 logger.info("Took {} ms to create {} polynomial(s) for resharing", delta, polynomialContext.getNPolynomials());
                 resharingListener.onResharingPolynomialsCreation(polynomialContext);
+            } else if (counter % (polynomialContext.getNPolynomials() / 2) == 0) {
+                createMorePolynomials(polynomialContext);
             }
         }
         lock.unlock();
+    }
+
+    private void createMorePolynomials(ResharingPolynomialContext polynomialContext) {
+        logger.info("Creating new 50k polynomials");
+        int oldF = polynomialContext.getOldF();
+        int newF = polynomialContext.getNewF();
+        int[] oldMembers = polynomialContext.getOldMembers();
+        int[] newMembers = polynomialContext.getNewMembers();
+        int internalId = polynomialContext.getId();
+        int nPolynomials = polynomialContext.getNPolynomials();
+        PolynomialContext oldView = new PolynomialContext(
+                oldF,
+                BigInteger.ZERO,
+                null,
+                oldMembers
+        );
+        PolynomialContext newView = new PolynomialContext(
+                newF,
+                BigInteger.ZERO,
+                null,
+                newMembers
+        );
+        for (int i = 0; i < polynomialContext.getNPolynomials() / 2; i++) {
+            int id = internalSequenceNumber++;
+            int leader = oldMembers[id % oldMembers.length];
+            PolynomialCreationContext creationContext = new PolynomialCreationContext(
+                    id,
+                    internalId,
+                    nPolynomials,
+                    false,
+                    false,
+                    leader,
+                    PolynomialCreationReason.RESHARING,
+                    oldView,
+                    newView
+            );
+            logger.debug("Starting creation of new polynomial with id {} for resharing", id);
+            distributedPolynomial.createNewPolynomial(creationContext);
+        }
     }
 
     @Override

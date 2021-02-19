@@ -4,7 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SSLSocket;
-import java.io.*;
+import java.io.IOException;
+import java.io.ObjectInput;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /**
@@ -15,11 +16,11 @@ public class ReceiverThread extends Thread {
     private final int remoteId;
     private final LinkedBlockingQueue<InternalMessage> inQueue;
     private SSLSocket socket;
-    private DataInputStream socketInStream;
+    private ObjectInput socketInStream;
     private final Connection connection;
 
     public ReceiverThread(int remoteId, LinkedBlockingQueue<InternalMessage> inQueue, SSLSocket socket,
-                          DataInputStream socketInStream, Connection connection) {
+                          ObjectInput socketInStream, Connection connection) {
         super("Receiver Thread for " + remoteId);
         this.remoteId = remoteId;
         this.inQueue = inQueue;
@@ -33,30 +34,15 @@ public class ReceiverThread extends Thread {
         while (connection.isDoingWork()) {
             if (socket != null && socketInStream != null) {
                 try {
-                    int dataLength = socketInStream.readInt();
-                    byte[] data = new byte[dataLength];
-                    int read = 0;
-                    do {
-                        read += socketInStream.read(data, read, dataLength - read);
-                    } while (read < dataLength);
-
-                    byte hasMAC = socketInStream.readByte();
-                    logger.debug("Read: {}, HashMAC: {}", read, hasMAC);
-
-                    try (ByteArrayInputStream bis = new ByteArrayInputStream(data);
-                         ObjectInput in = new ObjectInputStream(bis)) {
-                        InternalMessage message = new InternalMessage();
-                        message.readExternal(in);
-
-                        if (message.getSender() == remoteId) {
-                            if (!inQueue.offer(message)) {
-                                logger.warn("InQueue full (message from {} discarded)", remoteId);
-                            }
+                    InternalMessage message = new InternalMessage();
+                    message.readExternal(socketInStream);
+                    if (message.getSender() == remoteId) {
+                        if (!inQueue.offer(message)) {
+                            logger.warn("InQueue full (message from {} discarded)", remoteId);
                         }
-                    } catch (ClassNotFoundException e) {
-                        logger.warn("Invalid message received. Ignoring!");
                     }
-
+                } catch (ClassNotFoundException e) {
+                    logger.warn("Invalid message received. Ignoring!");
                 } catch (IOException e) {
                     if (connection.isDoingWork()) {
                         logger.debug("Closing socket and reconnecting");
@@ -72,7 +58,7 @@ public class ReceiverThread extends Thread {
         logger.debug("Exiting sender thread for {}", remoteId);
     }
 
-    public void updateConnection(SSLSocket socket, DataInputStream socketInStream) {
+    public void updateConnection(SSLSocket socket, ObjectInput socketInStream) {
         this.socket = socket;
         this.socketInStream = socketInStream;
     }

@@ -3,18 +3,12 @@ package confidential.interServersCommunication;
 import bftsmart.tom.MessageContext;
 
 public class InterServerMessageHolder {
-    private final InterServersMessageType type;
     private final byte[] serializedMessage;
     private final MessageContext messageContext;
 
-    public InterServerMessageHolder(InterServersMessageType type, byte[] serializedMessage, MessageContext messageContext) {
-        this.type = type;
+    public InterServerMessageHolder(byte[] serializedMessage, MessageContext messageContext) {
         this.serializedMessage = serializedMessage;
         this.messageContext = messageContext;
-    }
-
-    public InterServersMessageType getType() {
-        return type;
     }
 
     public byte[] getSerializedMessage() {

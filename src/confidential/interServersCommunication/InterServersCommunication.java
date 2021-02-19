@@ -13,7 +13,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -24,6 +23,7 @@ public class InterServersCommunication {
     private final Map<InterServersMessageType, InterServerMessageListener> listeners;
     private final CommunicationManager communicationManager;
     private final int pid;
+    private InterServerMessageListener listener;
 
     public InterServersCommunication(ServerCommunicationSystem communicationSystem, ServerViewController viewController) {
         this.tomMessageGenerator = new TOMMessageGenerator(viewController);
@@ -34,10 +34,9 @@ public class InterServersCommunication {
         this.pid = viewController.getStaticConf().getProcessId();
     }
 
-    public synchronized void sendOrdered(InterServersMessageType type, byte[] metadata, byte[] request,
+    public synchronized void sendOrdered(byte[] metadata, byte[] request,
                             int... targets) {
-        TOMMessage msg = tomMessageGenerator.getNextOrdered(metadata,
-                serializeRequest(type, request));
+        TOMMessage msg = tomMessageGenerator.getNextOrdered(metadata, serializeRequest(request));
         communicationSystem.send(targets, new ForwardedMessage(msg.getSender(), msg));
     }
 
@@ -45,44 +44,26 @@ public class InterServersCommunication {
         return communicationManager.registerMessageListener(listener);
     }
 
-    public synchronized void sendUnordered(CommunicationTag tag, InterServersMessageType type,
-                                           byte[] request, int... targets) {
-        byte[] message = serializeInternalRequest(type, request);
-        communicationManager.send(tag, new InternalMessage(pid, tag, message), targets);
+    public synchronized void sendUnordered(CommunicationTag tag, byte[] request, int... targets) {
+        communicationManager.send(tag, new InternalMessage(pid, tag, request), targets);
     }
 
     public void registerListener(InterServerMessageListener listener, InterServersMessageType messageType,
                                  InterServersMessageType... moreMessageTypes) {
-        listeners.put(messageType, listener);
-        for (InterServersMessageType type : moreMessageTypes)
-            listeners.put(type, listener);
+        if (listener == null)
+            logger.error("Inter server message listener is null");
+        this.listener = listener;
     }
 
     public void messageReceived(byte[] message, MessageContext msgCtx) {
-        InterServersMessageType type = InterServersMessageType.getType(message[0]);
-        byte[] m = Arrays.copyOfRange(message, 1, message.length);
-        InterServerMessageListener listener = listeners.get(type);
-        if (listener == null)
-            logger.warn("Listener for message type {} not found", type);
-        else {
-            InterServerMessageHolder holder = new InterServerMessageHolder(type, m, msgCtx);
-            listener.messageReceived(holder);
-        }
+        listener.messageReceived(new InterServerMessageHolder(message, msgCtx));
     }
 
-    private byte[] serializeInternalRequest(InterServersMessageType type, byte[] request) {
-        byte[] result = new byte[request.length + 1];
-        result[0] = (byte) type.ordinal();
-        System.arraycopy(request, 0, result, 1, request.length);
-        return result;
-    }
-
-    private byte[] serializeRequest(InterServersMessageType type, byte[] request) {
+    private byte[] serializeRequest(byte[] request) {
         try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
              ObjectOutput out = new ObjectOutputStream(bos)) {
             out.write((byte) MessageType.APPLICATION.ordinal());
-            out.writeInt(1 + request.length);
-            out.write((byte)type.ordinal());
+            out.writeInt(request.length);
             out.write(request);
             out.flush();
             bos.flush();

@@ -14,7 +14,6 @@ import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectInputStream;
 import java.security.SecureRandom;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -22,7 +21,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class DistributedPolynomial implements InterServerMessageListener, Runnable {
-    private final Logger logger = LoggerFactory.getLogger("confidential");
+    private final Logger logger = LoggerFactory.getLogger("polynomial_generation");
     private static final byte[] SEED = "confidential".getBytes();
 
     private final InterServersCommunication serversCommunication;
@@ -46,20 +45,12 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
         this.pendingMessages = new LinkedBlockingQueue<>();
         entryLock = new ReentrantLock(true);
         serversCommunication.registerListener(this,
-                //InterServersMessageType.NEW_POLYNOMIAL,
-                //InterServersMessageType.POLYNOMIAL_PROPOSAL,
-                //InterServersMessageType.POLYNOMIAL_PROPOSAL_SET,
-                //InterServersMessageType.POLYNOMIAL_VOTE,
-                //InterServersMessageType.POLYNOMIAL_REQUEST_MISSING_PROPOSALS,
-                //InterServersMessageType.POLYNOMIAL_MISSING_PROPOSALS,
                 InterServersMessageType.POLYNOMIAL_PROCESSED_VOTES
         );
         MessageListener polynomialMessageListener = new MessageListener(CommunicationTag.POLYNOMIAL) {
             @Override
             public void deliverMessage(InternalMessage message) {
-                InterServersMessageType type = InterServersMessageType.getType(message.getMessage()[0]);
-                byte[] m = Arrays.copyOfRange(message.getMessage(), 1, message.getMessage().length);
-                while (!pendingMessages.offer(new InterServerMessageHolder(type, m, null))){
+                while (!pendingMessages.offer(new InterServerMessageHolder(message.getMessage(), null))){
                     logger.debug("Distributed polynomial pending message queue is full");
                 }
             }
@@ -140,10 +131,12 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
             try {
                 InterServerMessageHolder message = pendingMessages.take();
                 entryLock.lock();
-                PolynomialMessage polynomialMessage;
+                PolynomialMessage polynomialMessage = null;
+                InterServersMessageType type = null;
                 try (ByteArrayInputStream bis = new ByteArrayInputStream(message.getSerializedMessage());
                      ObjectInput in = new ObjectInputStream(bis)) {
-                    switch (message.getType()) {
+                    type = InterServersMessageType.getType(in.read());
+                    switch (type) {
                         case NEW_POLYNOMIAL:
                             polynomialMessage = new NewPolynomialMessage();
                             break;
@@ -166,32 +159,38 @@ public class DistributedPolynomial implements InterServerMessageListener, Runnab
                             polynomialMessage = new MissingProposalsMessage();
                             break;
                         default:
-                            logger.warn("Unknown polynomial message type {}", message.getType());
+                            logger.warn("Unknown polynomial message type {}", type);
                             continue;
                     }
                     polynomialMessage.readExternal(in);
-                    PolynomialCreator polynomialCreator = polynomialCreators.get(polynomialMessage.getId());
-                    if (polynomialCreator == null && polynomialMessage instanceof NewPolynomialMessage) {
-                        NewPolynomialMessage newPolynomialMessage = (NewPolynomialMessage) polynomialMessage;
-                        logger.debug("There is no active polynomial creation with id {}", newPolynomialMessage.getId());
-                        logger.debug("Creating new polynomial creator for id {} and reason {}", newPolynomialMessage.getId(),
-                                newPolynomialMessage.getContext().getReason());
-                        polynomialCreator = createNewPolynomialCreator(newPolynomialMessage.getContext());
-                    }
-                    if (polynomialCreator == null) {
-                        logger.debug("There is no active polynomial creation with id {}", polynomialMessage.getId());
-                        continue;
-                    }
 
-                    PolynomialCreator finalPolynomialCreator = polynomialCreator;
-                    PolynomialMessage finalPolynomialMessage = polynomialMessage;
-                    int cid = message.getMessageContext() == null ? -1 : message.getMessageContext().getConsensusId();
-                    executorService.execute(() -> finalPolynomialCreator.messageReceived(message.getType(),
-                            finalPolynomialMessage, cid));
                 } catch (IOException | ClassNotFoundException e) {
-                    logger.error("Failed to deserialize polynomial message of type {}", message.getType(), e);
+                    logger.error("Failed to deserialize polynomial message of type", e);
                 }
+                if (polynomialMessage == null) {
+                    logger.debug("Polynomial message is null");
+                    continue;
+                }
+                PolynomialCreator polynomialCreator = polynomialCreators.get(polynomialMessage.getId());
+                if (polynomialCreator == null && polynomialMessage instanceof NewPolynomialMessage) {
+                    NewPolynomialMessage newPolynomialMessage = (NewPolynomialMessage) polynomialMessage;
+                    logger.debug("There is no active polynomial creation with id {}", newPolynomialMessage.getId());
+                    logger.debug("Creating new polynomial creator for id {} and reason {}", newPolynomialMessage.getId(),
+                            newPolynomialMessage.getContext().getReason());
+                    polynomialCreator = createNewPolynomialCreator(newPolynomialMessage.getContext());
+                }
+                if (polynomialCreator == null) {
+                    logger.debug("There is no active polynomial creation with id {}", polynomialMessage.getId());
+                    continue;
+                }
+                PolynomialMessage finalPolynomialMessage = polynomialMessage;
+                InterServersMessageType finalType = type;
+                int cid = message.getMessageContext() == null ? -1 : message.getMessageContext().getConsensusId();
+                PolynomialCreator finalPolynomialCreator = polynomialCreator;
+                executorService.execute(() -> finalPolynomialCreator.messageReceived(finalType,
+                        finalPolynomialMessage, cid));
             } catch (InterruptedException e) {
+                logger.error("Something went wrong", e);
                 break;
             } finally {
                 entryLock.unlock();
