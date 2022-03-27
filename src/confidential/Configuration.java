@@ -7,7 +7,7 @@ import java.io.IOException;
 
 public final class Configuration {
 	private static String configurationFilePath =
-			"config" + File.separator + "cobra.config";
+			"config" + File.separator + "mpss.config";
 	private long renewalPeriod;
 	private boolean renewalActive;
 	private String vssScheme;
